@@ -42,7 +42,8 @@ public:
 	bool GetbIsCombat();
 	void SetbIsDead(bool Target);
 	bool GetbIsDead();
-
+	UMonsterRangeComponent* GetMonsterRangeComp() { return MonsterRangeComp; };
+	FPrimaryAssetId GetMonsterId() const { return MonsterId; }
 	
 protected:
 
@@ -71,6 +72,9 @@ private:
 	void OnRep_MonsterData();
 	
 	// 이벤트 태그
+	UFUNCTION()
+	void MonsterGroupHitCall(AActor* Target);
+
 	UFUNCTION() // SendHitEvent()
 	void OnMonterHitHandle(AActor* Target);
 
@@ -175,6 +179,9 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Collision", meta = (AllowprivateAccess = "true"))
 	TObjectPtr<UBoxComponent> HitBoxComp;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Sound", meta = (AllowprivateAccess = "true"))
+	TObjectPtr<UAudioComponent> SoundComp;
+
 
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "GAS", meta = (AllowPrivateAccess = "true"))
@@ -261,6 +268,9 @@ public:
 	int32 GetSpawnPoint() { return SpawnPoint; }
 
 
+	// Test용
+	UFUNCTION(BlueprintCallable)
+	void ASCTagCheck();
 
 };
 

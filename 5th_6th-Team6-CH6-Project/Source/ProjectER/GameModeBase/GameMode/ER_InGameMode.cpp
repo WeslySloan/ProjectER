@@ -27,11 +27,38 @@ void AER_InGameMode::BeginPlay()
 
 }
 
+AER_InGameMode::AER_InGameMode()
+{
+	bUseSeamlessTravel = true;
+}
+
 void AER_InGameMode::PostSeamlessTravel()
 {
 	Super::PostSeamlessTravel();
 
 	UE_LOG(LogTemp, Warning, TEXT("[GM] PostSeamlessTravel - Expecting %d players"), ExpectedPlayers);
+
+	// 무한 로딩을 방지하기 위해 60초 타이머 설정
+	GetWorld()->GetTimerManager().SetTimer(LoadingTimeoutHandle, this, &AER_InGameMode::HandleLoadingTimeout, 60.0f, false);
+}
+
+void AER_InGameMode::HandleLoadingTimeout()
+{
+	if (bIsGameStarted) return;
+
+	UE_LOG(LogTemp, Error, TEXT("[GM] Loading timeout! Arrrived: %d / Ready: %d / Expected: %d"), PlayersInitialized, PlayersReady, ExpectedPlayers);
+
+	if (PlayersReady > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GM] Forcing start with %d ready players."), PlayersReady);
+		ExpectedPlayers = PlayersReady;
+		StartGame();
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[GM] Not enough players. Aborting match."));
+		EndGame();
+	}
 }
 
 void AER_InGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
@@ -60,7 +87,8 @@ void AER_InGameMode::Logout(AController* Exiting)
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		APlayerController* PC = It->Get();
-		if (IsValid(PC) && PC->PlayerState)
+		// 방금 Logout을 호출한 Exiting은 제외
+		if (IsValid(PC) && PC != Exiting && PC->PlayerState)
 		{
 			++RemainingPlayers;
 		}
@@ -68,10 +96,34 @@ void AER_InGameMode::Logout(AController* Exiting)
 
 	UE_LOG(LogTemp, Warning, TEXT("[GM] Logout. RemainingPlayers=%d"), RemainingPlayers);
 
-	if (RemainingPlayers <= 1)
+	if (!bIsGameStarted)
 	{
-		//로그아웃 시점에 플레이어가 1명일 시에 서버 초기화
-		EndGame();
+		// 로딩/대기 중 나감
+		ExpectedPlayers = FMath::Max(0, ExpectedPlayers - 1);
+		UE_LOG(LogTemp, Warning, TEXT("[GM] Logout before start. Adjusted Expected= %d"), ExpectedPlayers);
+
+		if (ExpectedPlayers <= 1 || RemainingPlayers <= 1)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[GM] Not enough players to start. Ending game."));
+			GetWorld()->GetTimerManager().ClearTimer(LoadingTimeoutHandle);
+			EndGame();
+		}
+		else if (PlayersReady >= ExpectedPlayers)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[GM] All remaining players loaded. Starting game."));
+			GetWorld()->GetTimerManager().ClearTimer(LoadingTimeoutHandle);
+			StartGame();
+		}
+	}
+	else
+	{
+		// 게임 중 나감
+		if (RemainingPlayers < 1)
+		{
+			//로그아웃 시점에 플레이어가 1명일 시에 서버 초기화
+			//여기서 서버가 바로꺼지면 안되고 승리 패배 판정하고 나가야 할듯?
+			EndGame();
+		}
 	}
 }
 
@@ -85,18 +137,28 @@ void AER_InGameMode::HandleStartingNewPlayer_Implementation(APlayerController* N
 	if (ABasePlayerController* PC = Cast<ABasePlayerController>(NewPlayer))
 	{
 		PC->Client_InGameInputMode();
+		PC->Client_StartPreload(); // 방에 들어온 클라이언트에게 에셋 로딩을 지시
 	}
 	UE_LOG(LogTemp, Warning, TEXT("[GM] HSNPlayer this=%p world=%p map=%s PI=%d/%d"),
 		this, GetWorld(), *GetWorld()->GetMapName(), PlayersInitialized, ExpectedPlayers);
-	UE_LOG(LogTemp, Warning, TEXT("[GM] HandleStartingNewPlayer_Implementation"));
+
 	PlayersInitialized++;
 
-	UE_LOG(LogTemp, Warning, TEXT("[GM] HandleStartingNewPlayer %d/%d"), PlayersInitialized, ExpectedPlayers);
+	UE_LOG(LogTemp, Warning, TEXT("[GM] HandleStartingNewPlayer (Connected: %d/%d)"), PlayersInitialized, ExpectedPlayers);
 
-	if (!bIsGameStarted && PlayersInitialized >= ExpectedPlayers)
+	// 게임 진입 판단은 로딩 완료 이후에 진행
+}
+
+void AER_InGameMode::HandlePlayerLoadComplete(APlayerController* PC)
+{
+	PlayersReady++;
+
+	UE_LOG(LogTemp, Warning, TEXT("[GM] HandlePlayerLoadComplete -> %d / %d Ready"), PlayersReady, ExpectedPlayers);
+
+	if (!bIsGameStarted && PlayersReady >= ExpectedPlayers)
 	{
-		// 모든 플레이어가 준비된 상황에서 실행
-		UE_LOG(LogTemp, Warning, TEXT("[GM] HandleStartingNewPlayer_Implementation -> StartGame"));
+		UE_LOG(LogTemp, Warning, TEXT("[GM] All players ready -> StartGame"));
+		GetWorld()->GetTimerManager().ClearTimer(LoadingTimeoutHandle);
 		StartGame();
 	}
 }
@@ -110,12 +172,15 @@ void AER_InGameMode::DisConnectClient(APlayerController* PC)
 		ERPC->Client_ReturnToMainMenu(TEXT("GameOver"));
 	}
 
+	TWeakObjectPtr<APlayerController> WeakPC(PC);
+	TWeakObjectPtr<AER_InGameMode> WeakThis(this);
+
 	FTimerHandle Tmp;
-	GetWorld()->GetTimerManager().SetTimer(Tmp, [this, PC]()
+	GetWorld()->GetTimerManager().SetTimer(Tmp, [WeakThis, WeakPC]()
 		{
-			if (GameSession)
+			if (WeakThis.IsValid() && WeakThis->GameSession && WeakPC.IsValid())
 			{
-				GameSession->KickPlayer(PC, FText::FromString(TEXT("Defeated")));
+				WeakThis->GameSession->KickPlayer(WeakPC.Get(), FText::FromString(TEXT("Defeated")));
 			}
 		}, 0.2f, false);
 }
@@ -134,31 +199,52 @@ void AER_InGameMode::StartGame()
 	GetWorld()->GetTimerManager().SetTimerForNextTick([WeakThis]()
 		{
 			if (!WeakThis.IsValid()) return;
-			WeakThis->StartGame_Internal();
+			WeakThis->StartGame_Initialize();
 		});
+	GetWorldTimerManager().SetTimer(StartCountdownTimerHandle, this, &AER_InGameMode::TickCountdown, 1.0f, true);
 }
 
-void AER_InGameMode::StartGame_Internal()
+void AER_InGameMode::TickCountdown()
+{
+	UE_LOG(LogTemp, Warning, TEXT("Game Start Countdown: %d"), RemainingSeconds);
+
+	RemainingSeconds--;
+
+	if (RemainingSeconds < 0)
+	{
+		GetWorldTimerManager().ClearTimer(StartCountdownTimerHandle);
+		StartGame_Internal();
+	}
+}
+
+void AER_InGameMode::StartGame_Initialize()
 {
 	AER_GameState* ERGS = GetGameState<AER_GameState>();
-	if (!ERGS)
+	if (ERGS)
 	{
-		return;
+		ERGS->BuildTeamCache();
 	}
-
-	ERGS->BuildTeamCache();
 
 	UER_NeutralSpawnSubsystem* NeutralSS = GetWorld()->GetSubsystem<UER_NeutralSpawnSubsystem>();
 	if (NeutralSS)
 	{
 		NeutralSS->InitializeSpawnPoints(NeutralClass);
-		NeutralSS->FirstSpawnNeutral();
 	}
+
 	UER_ObjectSubsystem* ObjectSS = GetWorld()->GetSubsystem<UER_ObjectSubsystem>();
 	if (ObjectSS)
 	{
 		ObjectSS->InitializeObjectPoints(ObjectClass);
-		
+	}
+}
+
+void AER_InGameMode::StartGame_Internal()
+{
+	//플레이어 시작 위치 지정 코드를 여기에
+	UER_NeutralSpawnSubsystem* NeutralSS = GetWorld()->GetSubsystem<UER_NeutralSpawnSubsystem>();
+	if (NeutralSS)
+	{
+		NeutralSS->FirstSpawnNeutral();
 	}
 
 	HandlePhaseTimeUp();
@@ -182,6 +268,7 @@ void AER_InGameMode::EndGame_Internal()
 	}
 
 	PlayersInitialized = 0;
+	PlayersReady = 0;
 
 	UE_LOG(LogTemp, Warning, TEXT("[GM] Player is Zero -> ServerTravel to Lobby"));
 
@@ -211,34 +298,24 @@ void AER_InGameMode::NotifyPlayerDied(ACharacter* VictimCharacter, APlayerState*
 		const bool bCanEliminationProtect = (Phase == 1 || Phase == 2);
 
 		// 전멸 판정
-		if (!bCanEliminationProtect)
+		if (!bCanEliminationProtect && RespawnSS->EvaluateTeamElimination(*ERPS, *ERGS))
 		{
-			if (RespawnSS->EvaluateTeamElimination(*ERPS, *ERGS))
+			UE_LOG(LogTemp, Warning, TEXT("[GM] : NotifyPlayerDied , EvaluateTeamElimination = true"));
+
+			// 전멸 판정 true -> 해당 유저의 팀 사출 실행
+			const int32 TeamIdx = static_cast<int32>(ERPS->TeamType);
+
+			// 해당 팀의 리스폰 타이머 정지
+			RespawnSS->StopResapwnTimer(*ERGS, TeamIdx);
+
+			// 해당 팀 패배 처리
+			RespawnSS->SetTeamLose(*ERGS, TeamIdx);
+
+			// 승리 팀 체크
+			int32 LastTeamIdx = RespawnSS->CheckIsLastTeam(*ERGS);
+			if (LastTeamIdx != -1)
 			{
-				UE_LOG(LogTemp, Warning, TEXT("[GM] : NotifyPlayerDied , EvaluateTeamElimination = true"));
-
-				// 전멸 판정 true -> 해당 유저의 팀 사출 실행
-				const int32 TeamIdx = static_cast<int32>(ERPS->TeamType);
-
-				// 해당 팀의 리스폰 타이머 정지
-				RespawnSS->StopResapwnTimer(*ERGS, TeamIdx);
-
-				// 해당 팀 패배 처리
-				RespawnSS->SetTeamLose(*ERGS, TeamIdx);
-
-				// 승리 팀 체크
-				int32 LastTeamIdx = RespawnSS->CheckIsLastTeam(*ERGS);
-				if (LastTeamIdx != -1)
-				{
-					RespawnSS->SetTeamWin(*ERGS, LastTeamIdx);
-				}
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[GM] : NotifyPlayerDied , EvaluateTeamElimination = false"));
-
-				// 전멸 판정 false -> 리스폰 함수 실행
-				RespawnSS->StartRespawnTimer(*ERPS, *ERGS);
+				RespawnSS->SetTeamWin(*ERGS, LastTeamIdx);
 			}
 		}
 		else
@@ -254,13 +331,18 @@ void AER_InGameMode::NotifyPlayerDied(ACharacter* VictimCharacter, APlayerState*
 void AER_InGameMode::NotifyNeutralDied(ACharacter* VictimCharacter)
 {
 	if (!HasAuthority() || !VictimCharacter)
+	{
 		return;
+	}
 
-	//임시니까 일단 캐릭터의 변수를 이용
 	UE_LOG(LogTemp, Log, TEXT("[GM] : NotifyNeutralDied Start"));
 
 	ABaseMonster* NC = Cast<ABaseMonster>(VictimCharacter);
-	NC->GetSpawnPoint();
+	if (!NC)
+	{
+		return;
+	}
+
 	int32 SpawnPoint = NC->GetSpawnPoint();
 	UER_NeutralSpawnSubsystem* NeutralSS = GetWorld()->GetSubsystem<UER_NeutralSpawnSubsystem>();
 	NeutralSS->SetFalsebIsSpawned(SpawnPoint);

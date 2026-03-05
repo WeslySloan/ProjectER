@@ -80,6 +80,10 @@ protected:
 	void OnCameraToggle();
 	void OnCameraHold_Started();
 	void OnCameraHold_Completed();
+
+	// 미니맵 클릭 이동 _ mpyi
+public:
+	void OnMinimapClicked(FVector _TargetWorldPos);
 	
 protected:
 	// 입력 매핑 컨텍스트 (IMC)
@@ -176,7 +180,15 @@ public:
 	UFUNCTION(BlueprintCallable, Client, Reliable)
 	void Client_ReturnToMainMenu(const FString& Reason);
 
+	// [Asset Preloading]
+	UFUNCTION(BlueprintCallable, Client, Reliable)
+	void Client_StartPreload();
 
+	UFUNCTION(BlueprintCallable, Server, Reliable)
+	void Server_NotifyLoadComplete();
+
+	UFUNCTION()
+	void OnPreloadComplete();
 
 	// 아이템 루팅 RPC
 
@@ -206,6 +218,11 @@ public:
 	UFUNCTION(BlueprintCallable, Client, Reliable)
 	void Client_CloseLootUI(); // UI 닫기(로컬 전용)
 
+	UFUNCTION(BlueprintCallable, Client, Reliable)
+	void Client_OpenLoadingUI();
+
+	UFUNCTION(BlueprintCallable, Client, Reliable)
+	void Client_CloseLoadingUI();
 	// 박스 아이템 루팅 RPC 끝
 
 	//	mpyi 추가분 _ UI SYSTEM
@@ -280,10 +297,29 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<class UW_LootingPopup> LootWidgetInstance;
 
+	UPROPERTY(EditDefaultsOnly, Category = "UI")
+	TSubclassOf<UUserWidget> LoadingUIClass;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UUserWidget> LoadingUIInstance;
+
+	// Currently bound loot component for automatic popup close
+	TWeakObjectPtr<class ULootableComponent> BoundLootComponent;
+
+	// Close loot widget locally and cleanup bindings
+	void CloseLootWidgetLocal();
+
+	// Handler for loot depleted delegate
+	void HandleLootDepleted();
+
+	// 인벤토리 업데이트 핸들러
+	UFUNCTION()
+	void OnInventoryUpdated();
 
 	// Add reference to curved world subsystem
 	UPROPERTY()
 	TObjectPtr<UCurvedWorldSubsystem> CurvedWorldSubsystem;//cahced subsystem
     
 
+	void UseInventorySlot(int32 SlotIndex);
 };

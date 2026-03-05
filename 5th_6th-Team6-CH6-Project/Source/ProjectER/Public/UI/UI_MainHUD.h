@@ -74,6 +74,14 @@ public:
 	UFUNCTION()
 	void StartRespawn(float _RespawnTime);
 
+	// [김현수 추가분] 인벤토리 Grid (public으로 이동)
+	UPROPERTY(meta = (BindWidget))
+	class UUniformGridPanel* Grid_item;
+
+	// [김현수 추가분] 인벤토리 UI 업데이트 (아이템 시스템용)
+	UFUNCTION(BlueprintCallable, Category = "Inventory")
+	void UpdateInventoryUI();
+
 protected:
 	// 마우스 우클릭 확인용
 	virtual void NativeConstruct() override; // 생성자
@@ -294,11 +302,11 @@ private:
 	// SEVEN SEGMENT MAKER
 protected:
 	TArray<int32> GetDigitsFromNumber(int32 InNumber);
-	
+
 	UPROPERTY(EditAnywhere, Category = "UI_Resources")
 	TArray<UTexture2D*> SegmentTextures;
 
-public :
+public:
 	void SetKillCount(int32 InKillCount);
 	void SetDeathCount(int32 InDeathCount);
 	void SetAssistCount(int32 InAssistCount);

@@ -36,13 +36,18 @@ class PROJECTER_API AER_InGameMode : public AGameModeBase
 	GENERATED_BODY()
 	
 public:
+	AER_InGameMode();
+	
 	virtual void BeginPlay() override;
 	virtual void PostSeamlessTravel() override;
 	virtual void HandleStartingNewPlayer_Implementation(APlayerController* NewPlayer) override;
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 	virtual void Logout(AController* Exiting) override;
 
+	void HandlePlayerLoadComplete(APlayerController* PC);
+
 	void StartGame();
+	void StartGame_Initialize();
 	void StartGame_Internal();
 	void EndGame();
 	void EndGame_Internal();
@@ -67,14 +72,25 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void TEMP_DespawnNeutrals();
 
+
 private:
 	bool bIsGameStarted = false;
-	int32 PlayersInitialized = 0;
+	int32 PlayersInitialized = 0; // Number of players connected
+	int32 PlayersReady = 0;       // Number of players who finished preloading
 	int32 ExpectedPlayers = 0;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Phase")
 	float PhaseDuration = 30.f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Subsystem|Neutral")
 	TMap<FName, FNeutralClassConfig> NeutralClass;
+
+	FTimerHandle LoadingTimeoutHandle;
+	void HandleLoadingTimeout();
+
+	FTimerHandle StartCountdownTimerHandle;
+	int32 RemainingSeconds = 5;
+	void TickCountdown();
 
 	UPROPERTY(EditDefaultsOnly, Category = "Subsystem|Object")
 	TMap<FName, FObjectClassConfig> ObjectClass;

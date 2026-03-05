@@ -16,6 +16,7 @@
 #include "Components/ProgressBar.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "ItemSystem/Component/LootableComponent.h"
+#include "Components/AudioComponent.h"
 
 #include "Net/UnrealNetwork.h"
 #include "AbilitySystemComponent.h"
@@ -41,11 +42,13 @@ ABaseMonster::ABaseMonster()
 
 	// Collision 설정
 	GetMesh()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::PhysicsOnly);
+
+	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("Spectator"));
 
 	HitBoxComp = CreateDefaultSubobject<UBoxComponent>(TEXT("HitBoxComponent"));
 	HitBoxComp->SetupAttachment(RootComponent);
+	HitBoxComp->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	HitBoxComp->SetCollisionProfileName(TEXT("Spectator"));
 
 	// ASC 복제, 데이터 Minimal로 되는지 확인 필요
@@ -68,6 +71,9 @@ ABaseMonster::ABaseMonster()
 	HPBarWidgetComp->SetupAttachment(GetMesh());
 	HPBarWidgetComp->SetWidgetSpace(EWidgetSpace::Screen); // 체력바 크기가 일정할거같으니까?
 	HPBarWidgetComp->SetVisibility(false);
+
+	SoundComp = CreateDefaultSubobject<UAudioComponent>(TEXT("AudioComponent"));
+	SoundComp->SetupAttachment(RootComponent);
 
 	TeamID = ETeamType::Neutral;
 
@@ -110,7 +116,7 @@ void ABaseMonster::PossessedBy(AController* newController)
 
 	if (HasAuthority())
 	{
-		AttributeSet->OnMonsterHit.AddDynamic(this, &ABaseMonster::OnMonterHitHandle);
+		AttributeSet->OnMonsterHit.AddDynamic(this, &ABaseMonster::MonsterGroupHitCall);
 		AttributeSet->OnMonsterDeath.AddDynamic(this, &ABaseMonster::OnMonterDeathHandle);
 		AttributeSet->OnMoveSpeedChanged.AddDynamic(this, &ABaseMonster::OnMoveSpeedChangedHandle);
 		MonsterRangeComp->OnPlayerCountOne.AddDynamic(this, &ABaseMonster::OnPlayerCountOneHandle);
@@ -152,14 +158,24 @@ void ABaseMonster::InitMonsterData(FPrimaryAssetId MonsterAssetId, float Level)
 
 void ABaseMonster::InitMonsterDataLoading(FPrimaryAssetId MonsterAssetId, float Level)
 {
-	UAssetManager::Get().LoadPrimaryAsset(MonsterAssetId,
-		TArray<FName>(),
-		FStreamableDelegate::CreateUObject(
-			this,
-			&ABaseMonster::OnMonsterDataLoaded,
-			MonsterAssetId,
-			Level
-		));
+	UObject* PreloadedData = UAssetManager::Get().GetPrimaryAssetObject(MonsterAssetId);
+	if (PreloadedData)
+	{
+		// 이전에 ER_AssetPreloadSubsystem 등에 의해 이미 메모리에 올라와있다면 즉시 초기화
+		OnMonsterDataLoaded(MonsterAssetId, Level);
+	}
+	else
+	{
+		// 로딩이 안된 경우 비동기 로딩 진행 (예방 차원)
+		UAssetManager::Get().LoadPrimaryAsset(MonsterAssetId,
+			TArray<FName>(),
+			FStreamableDelegate::CreateUObject(
+				this,
+				&ABaseMonster::OnMonsterDataLoaded,
+				MonsterAssetId,
+				Level
+			));
+	}
 }
 
 void ABaseMonster::OnMonsterDataLoaded(FPrimaryAssetId MonsterAssetId, float Level)
@@ -172,13 +188,17 @@ void ABaseMonster::OnMonsterDataLoaded(FPrimaryAssetId MonsterAssetId, float Lev
 		UE_LOG(LogTemp, Error, TEXT("ABaseMonster::InitMonsterData - MonsterData is Not Valid!"));
 	}
 
-	InitVisuals();
-	InitCollision();
+
 	if (HasAuthority())
 	{
 		ASC->AddLooseGameplayTag(MonsterData->AttackType);
 		InitAttributes(Level);
 		InitGiveAbilities();
+	}
+	InitVisuals();
+	InitCollision();
+	if (HasAuthority())
+	{
 		InitStateTree();
 	}
 }
@@ -361,10 +381,45 @@ void ABaseMonster::InitHPBar()
 	HPBar->SetPercent(1.f);
 }
 
+void ABaseMonster::MonsterGroupHitCall(AActor* Target)
+{
+	OnMonterHitHandle(Target); // 자신
+	// 그룹 전파 
+	if (MonsterRangeComp)
+	{
+		for (TObjectPtr<ABaseMonster> GroupMember : MonsterRangeComp->GetMonsterGroup())
+		{
+			// 살아있고 현재 전투 중이 아닌 동료만 대상
+			if (IsValid(GroupMember) && !GroupMember->GetbIsDead() && !GroupMember->GetbIsCombat() && GroupMember != this)
+			{
+				// 동료가 직접 맞은 것처럼 OnMonterHitHandle 호출
+				GroupMember->OnMonterHitHandle(Target);
+			}
+		}
+	}
+}
+
 // 서버에서만
 void ABaseMonster::OnMonterHitHandle(AActor* Target)
 {
-	SetTargetPlayer(Target);
+	if (IsValid(TargetPlayer) && TargetPlayer != Target)
+	{
+		const float OldTargetDistance = FVector::DistSquared(TargetPlayer->GetActorLocation(), GetActorLocation());
+		const float NewTargetDistance = FVector::DistSquared(Target->GetActorLocation(), GetActorLocation());
+
+		if (NewTargetDistance < OldTargetDistance)
+		{
+			if (ABaseCharacter* OldTargetPlayer = Cast<ABaseCharacter>(TargetPlayer))
+			{
+				OldTargetPlayer->OnDeath.RemoveDynamic(this, &ABaseMonster::OnTargetLostHandle);
+			}
+			SetTargetPlayer(Target);
+		}
+	}
+	else if (!IsValid(TargetPlayer))
+	{
+		SetTargetPlayer(Target);
+	}
 
 	if (bIsPhaseTrigger == false && AttributeSet->GetHPPersent() <= 0.5f)
 	{
@@ -372,10 +427,12 @@ void ABaseMonster::OnMonterHitHandle(AActor* Target)
 		SendStateTreeEvent(MonsterTags.Phase2EventTag);
 	}
 
-	ABaseCharacter* BC = Cast<ABaseCharacter>(Target);
-	if (!BC->OnDeath.IsAlreadyBound(this, &ABaseMonster::OnTargetLostHandle))
+	if (ABaseCharacter* BC = Cast<ABaseCharacter>(TargetPlayer))
 	{
-		BC->OnDeath.AddDynamic(this, &ABaseMonster::OnTargetLostHandle);
+		if (!BC->OnDeath.IsAlreadyBound(this, &ABaseMonster::OnTargetLostHandle))
+		{
+			BC->OnDeath.AddDynamic(this, &ABaseMonster::OnTargetLostHandle);
+		}
 	}
 	
 	if (IsValid(StateTreeComp) == false)
@@ -448,7 +505,10 @@ void ABaseMonster::TryActivateByDynamicTag(FGameplayTag InputTag)
 	{
 		if (Spec.DynamicAbilityTags.HasTagExact(InputTag))
 		{
-			ASC->TryActivateAbility(Spec.Handle);
+			if (!ASC->TryActivateAbility(Spec.Handle))
+			{
+				UE_LOG(LogTemp, Error, TEXT("ABaseMonster::TryActivateByDynamicTag : Skill Fail"));
+			}
 			break;
 		}
 	}
@@ -570,6 +630,7 @@ void ABaseMonster::SendStateTreeEvent(FGameplayTag InputTag)
 		return;
 	}
 	StateTreeComp->SendStateTreeEvent(InputTag);
+	//UE_LOG(LogTemp, Error, TEXT("ABaseMonster::SendStateTreeEvent"));
 }
 
 UStateTreeComponent* ABaseMonster::GetStateTreeComponent()
@@ -632,18 +693,14 @@ ETeamType ABaseMonster::GetTeamType() const
 
 bool ABaseMonster::IsTargetable() const
 {
-	if (bIsDead)
+	if (IsValid(ASC))
 	{
-		return false;
+		if (ASC->HasMatchingGameplayTag(MonsterTags.DeathStateTag))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("DeathStateTag Add"));
+			return false;
+		}
 	}
-
-	// if (IsValid(ASC))
-	// {
-	// 	if (ASC->HasMatchingGameplayTag(MonsterTags.DeathStateTag))
-	// 	{
-	// 		return false;
-	// 	}
-	// }
 
 	return true;
 }
@@ -695,4 +752,17 @@ void ABaseMonster::Death()
 		return;
 	}
 	StateTreeComp->SendStateTreeEvent(FStateTreeEvent(MonsterTags.DeathEventTag));
+}
+
+
+
+void ABaseMonster::ASCTagCheck()
+{
+	FGameplayTagContainer OwnedTags;
+	ASC->GetOwnedGameplayTags(OwnedTags);
+
+	for (const FGameplayTag& Tag : OwnedTags)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Tag: %s"), *Tag.ToString());
+	}
 }

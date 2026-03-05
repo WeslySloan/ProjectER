@@ -79,12 +79,12 @@ void USummonRangeGEC::OnGameplayEffectExecuted(FActiveGameplayEffectsContainer& 
 		return;
 	}
 
+	APawn* SpawnInstigator = Cast<APawn>(EffectContext.GetInstigator());
+
 	FVector SpawnLocation = EffectContextData->GetOrigin();
 	SpawnLocation.Z += SpawnConfig->ZOffset;
 
 	FTransform SpawnTransform(SpawnConfig->SpawnRotation, SpawnLocation);
-	APawn* SpawnInstigator = Cast<APawn>(EffectContext.GetInstigator());
-
 	AActor* DeferredSpawnedActor = World->SpawnActorDeferred<AActor>(SpawnConfig->RangeActorClass, SpawnTransform, EffectCauser, SpawnInstigator, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 
 	USkillBase* NonConstInstigatorSkill = const_cast<USkillBase*>(Cast<USkillBase>(EffectContext.GetAbility()));
@@ -106,4 +106,30 @@ void USummonRangeGEC::OnGameplayEffectExecuted(FActiveGameplayEffectsContainer& 
 	}
 
 	DeferredSpawnedActor->FinishSpawning(SpawnTransform);
+}
+
+FText USummonRangeByWorldOriginGECConfig::BuildTooltipDescription(float InLevel) const
+{
+	TArray<FString> AppliedDescriptions;
+
+	for (const USkillEffectDataAsset* SkillEffectDataAsset : Applied)
+	{
+		if (!IsValid(SkillEffectDataAsset))
+		{
+			continue;
+		}
+
+		const FString Desc = SkillEffectDataAsset->BuildEffectDescription(InLevel).ToString();
+		if (!Desc.IsEmpty())
+		{
+			AppliedDescriptions.Add(Desc);
+		}
+	}
+
+	if (AppliedDescriptions.IsEmpty())
+	{
+		return FText::GetEmpty();
+	}
+
+	return FText::FromString(FString::Join(AppliedDescriptions, TEXT("\n")));
 }

@@ -12,47 +12,47 @@
 #include "SkillSystem/GameplayAbilityTargetActor/TargetActor.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "CharacterSystem/Character/BaseCharacter.h"
-#include "MouseClickSkill.h"
 
 #define ECC_SKill ECC_GameTraceChannel6
 
 UMouseTargetSkill::UMouseTargetSkill()
 {
-
+	ExternalTargetActorEventTag = FGameplayTag::RequestGameplayTag(FName("Skill.Data.Target"));
 }
 
 void UMouseTargetSkill::ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData)
 {
 	Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
+	SetWaitExternalTargetEventTask();
 	SetWaitTargetTask();
-
-	//if (IsLocallyControlled())
-	//{
-	//	SetWaitTargetTask();
-	//	/*if (CastInstantly() == false)
-	//	{
-	//		UE_LOG(LogTemp, Warning, TEXT("SetWaitTargetTask"));
-	//		SetWaitTargetTask();
-	//	}*/
-	//}
 }
 
 void UMouseTargetSkill::ExecuteSkill()
 {
 	Super::ExecuteSkill();
-	UMouseTargetSkillConfig* Config = Cast<UMouseTargetSkillConfig>(CachedConfig);
-	if (!Config || AffectedActors.Num() <= 0) return;
-	const TArray<TObjectPtr<USkillEffectDataAsset>>& EffectDataAssets = Config->GetEffectsToApply();
 
-	ApplyEffectsToActors(AffectedActors, EffectDataAssets);
-	RotateToTarget(AffectedActors.begin()->Get());
-	//FinishSkill();
+	AActor* const TargetActor = AffectedActor.Get();
+	if (!IsValid(TargetActor)) return;
+	RotateToTarget(TargetActor);
+
+	UMouseTargetSkillConfig* Config = Cast<UMouseTargetSkillConfig>(CachedConfig);
+	if (!IsValid(Config)) return;
+
+	const TArray<TObjectPtr<USkillEffectDataAsset>>& EffectDataAssets = Config->GetEffectsToApply();
+	if (EffectDataAssets.Num() <= 0) return;
+	ApplyEffectsTarget(TargetActor, EffectDataAssets);
 }
 
-void UMouseTargetSkill::FinishSkill()
+void UMouseTargetSkill::CompleteFinishSkill()
 {
-	Super::FinishSkill();
-	AffectedActors.Empty();
+	CleanUpSkill();
+	Super::CompleteFinishSkill();
+}
+
+void UMouseTargetSkill::OnCancelAbility()
+{
+	CleanUpSkill();
+	Super::OnCancelAbility();
 }
 
 void UMouseTargetSkill::SetWaitTargetTask()
@@ -74,6 +74,7 @@ void UMouseTargetSkill::SetWaitTargetTask()
 		MyTargetActor = Cast<ATargetActor>(SpawnedActor);
 		if (MyTargetActor)
 		{
+			CurrentTargetActor = MyTargetActor;
 			MyTargetActor->PrimaryPC = Cast<APlayerController>(GetActorInfo().PlayerController);
 			WaitTargetTask->FinishSpawningActor(this, SpawnedActor);
 		}
@@ -89,6 +90,44 @@ void UMouseTargetSkill::SetWaitTargetTask()
 	}
 }
 
+void UMouseTargetSkill::SetWaitExternalTargetEventTask()
+{
+	if (!ExternalTargetActorEventTag.IsValid()) return;
+
+	UAbilityTask_WaitGameplayEvent* WaitEventTask = UAbilityTask_WaitGameplayEvent::WaitGameplayEvent(this, ExternalTargetActorEventTag, nullptr, false, true);
+	if (!IsValid(WaitEventTask)) return;
+
+	WaitEventTask->EventReceived.AddDynamic(this, &UMouseTargetSkill::OnExternalTargetActorReceived);
+	WaitEventTask->ReadyForActivation();
+}
+
+void UMouseTargetSkill::SubmitExternalTargetActor(AActor* InTargetActor)
+{
+	if (!IsTargetActorInRange(InTargetActor))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SubmitExternalTargetActor::OutOfRange"));
+		return;
+	}
+
+	if (CurrentTargetActor.IsValid())
+	{
+		CurrentTargetActor->SubmitExternalTarget(InTargetActor);
+		return;
+	}
+
+	PendingExternalTargetActor = InTargetActor;
+}
+
+bool UMouseTargetSkill::ConsumePendingExternalTargetActor(AActor*& OutTargetActor)
+{
+	if (!PendingExternalTargetActor.IsValid()) return false;
+
+	OutTargetActor = PendingExternalTargetActor.Get();
+	PendingExternalTargetActor = nullptr;
+	return true;
+}
+
+
 void UMouseTargetSkill::OnTargetDataReady(const FGameplayAbilityTargetDataHandle& DataHandle)
 {
 	TArray<AActor*> TargetActors = UAbilitySystemBlueprintLibrary::GetActorsFromTargetData(DataHandle, 0);
@@ -98,17 +137,34 @@ void UMouseTargetSkill::OnTargetDataReady(const FGameplayAbilityTargetDataHandle
 		return;
 	}
 
-	for (AActor* Actor : TargetActors)
+	AffectedActor = nullptr;
+	for (AActor* const Actor : TargetActors)
 	{
-		AffectedActors.Add(Actor);
+		if (!IsValid(Actor)) continue;
+		AffectedActor = Actor;
+		break;
 	}
+
+	if (!AffectedActor.IsValid()) return;
 
 	PrepareToActiveSkill();
 }
 
 void UMouseTargetSkill::OnTargetCancelled(const FGameplayAbilityTargetDataHandle& DataHandle)
 {
+	CurrentTargetActor = nullptr;
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+}
+
+void UMouseTargetSkill::OnExternalTargetActorReceived(FGameplayEventData Payload)
+{
+	const AActor* Target = Payload.Target;
+
+	if (IsValid(Target))
+	{
+		AActor* NonConstTarget = const_cast<AActor*>(Target);
+		SubmitExternalTargetActor(NonConstTarget);
+	}
 }
 
 AActor* UMouseTargetSkill::GetTargetUnderCursorInRange()
@@ -121,12 +177,17 @@ AActor* UMouseTargetSkill::GetTargetUnderCursorInRange()
 
 	if (!IsValid(HitActor)) return nullptr;
 
-	if (IsInRange(HitActor) && IsValidRelationship(HitActor))
+	if (IsTargetActorInRange(HitActor))
 	{
 		return HitActor;
 	}
 
 	return nullptr;
+}
+
+bool UMouseTargetSkill::IsTargetActorInRange(AActor* InTargetActor)
+{
+	return IsInRange(InTargetActor) && IsValidRelationship(InTargetActor);
 }
 
 AActor* UMouseTargetSkill::GetTargetUnderCursor()
@@ -187,10 +248,36 @@ void UMouseTargetSkill::RotateToTarget(AActor* Actor)
 	NewRotation.Yaw = LookAtRotation.Yaw;
 
 	Avatar->SetActorRotation(NewRotation);
+}
 
-	//컨트롤러값도 수정 이후 확인 필요
-	/*if (APlayerController* PC = Cast<APlayerController>(GetActorInfo().PlayerController.Get()))
+void UMouseTargetSkill::ApplyEffectsTarget(AActor* TargetActor, const TArray<TObjectPtr<USkillEffectDataAsset>>& SkillEffectDataAssets)
+{
+	UAbilitySystemComponent* const SourceASC = GetAbilitySystemComponentFromActorInfo();
+	AActor* const Avatar = GetAvatarActorFromActorInfo();
+	if (!IsValid(SourceASC) || !IsValid(Avatar) || !IsValid(TargetActor) || SkillEffectDataAssets.Num() <= 0) return;
+	if (!IsValidRelationship(TargetActor)) return;
+
+	FGameplayEffectContextHandle ContextHandle = SourceASC->MakeEffectContext();
+	ContextHandle.AddInstigator(Avatar, Avatar);
+	ContextHandle.SetAbility(this);
+
+	UAbilitySystemComponent* const TargetASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(TargetActor);
+	if (!IsValid(TargetASC)) return;
+
+	for (USkillEffectDataAsset* const Effect : SkillEffectDataAssets)
 	{
-		PC->SetControlRotation(NewRotation);
-	}*/
+		if (!IsValid(Effect)) continue;
+
+		for (FGameplayEffectSpecHandle& Spec : Effect->MakeSpecs(SourceASC, this, Avatar, ContextHandle))
+		{
+			if (!Spec.IsValid() || !Spec.Data.IsValid()) continue;
+			SourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
+		}
+	}
+}
+
+void UMouseTargetSkill::CleanUpSkill()
+{
+	CurrentTargetActor = nullptr;
+	AffectedActor = nullptr;
 }
