@@ -12,6 +12,7 @@
 #include "SkillSystem/Actor/BaseRangeOverlapEffectActor.h"
 #include "SkillSystem/GameplyeEffect/SkillEffectDataAsset.h"
 #include "SkillSystem/GameAbility/SkillBase.h"
+#include "Components/SkeletalMeshComponent.h"
 
 USummonRangeAtBone::USummonRangeAtBone()
 {
@@ -40,17 +41,16 @@ void USummonRangeAtBone::OnGameplayEffectExecuted(FActiveGameplayEffectsContaine
 	if (!IsValid(SpawnInstigator)) return;
 
 	// [4] 트랜스폼 계산
-	FVector FinalLocation = CalculateSpawnLocation(SpawnInstigator, SpawnConfig);
-	FTransform SpawnTransform(SpawnConfig->SpawnRotation, FinalLocation);
+	FTransform FinalTransform = CalculateSpawnLocation(SpawnInstigator, SpawnConfig);
 
 	// [5] 액터 지연 스폰 및 초기화
 	UWorld* World = EffectCauser->GetWorld();
-	ABaseRangeOverlapEffectActor* RangeActor = World->SpawnActorDeferred<ABaseRangeOverlapEffectActor>(SpawnConfig->RangeActorClass, SpawnTransform, EffectCauser, SpawnInstigator, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+	ABaseRangeOverlapEffectActor* RangeActor = World->SpawnActorDeferred<ABaseRangeOverlapEffectActor>(SpawnConfig->RangeActorClass, FinalTransform, EffectCauser, SpawnInstigator, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 
 	if (IsValid(RangeActor))
 	{
 		InitializeRangeActor(RangeActor, SpawnConfig, EffectCauser, ContextHandle);
-		RangeActor->FinishSpawning(SpawnTransform);
+		RangeActor->FinishSpawning(FinalTransform);
 	}
 }
 
@@ -68,24 +68,84 @@ const USummonRangeByBoneGECConfig* USummonRangeAtBone::GetSpawnConfig(const FGam
 	return Cast<USummonRangeByBoneGECConfig>(SkillContainer.SkillEffectDefinition[DataIndex].Config);
 }
 
-FVector USummonRangeAtBone::CalculateSpawnLocation(const AActor* Instigator, const USummonRangeByBoneGECConfig* Config) const
+FTransform USummonRangeAtBone::CalculateSpawnLocation(const AActor* Instigator, const USummonRangeByBoneGECConfig* Config) const
 {
+	if (!Instigator || !Config) return FTransform::Identity;
+	UWorld* World = Instigator->GetWorld();
+
+	// 1. 기준 위치/회전 초기값 (액터 기준)
 	FVector BaseLocation = Instigator->GetActorLocation();
 	FRotator BaseRotation = Instigator->GetActorRotation();
 
+	// 2. 메시에서 실제 본의 트랜스폼 가져오기
 	if (USkeletalMeshComponent* Mesh = Instigator->FindComponentByClass<USkeletalMeshComponent>())
 	{
 		if (Mesh->DoesSocketExist(Config->BoneName))
 		{
+			// 실시간 애니메이션 포즈 반영
+			Mesh->TickAnimation(0.f, false);
+			Mesh->RefreshBoneTransforms();
 			BaseLocation = Mesh->GetSocketLocation(Config->BoneName);
 			BaseRotation = Mesh->GetSocketRotation(Config->BoneName);
 		}
 	}
 
-	FVector FinalLocation = BaseLocation + BaseRotation.RotateVector(Config->LocationOffset);
-	FinalLocation.Z += Config->ZOffset;
+	// 3. 최종 회전값(CombinedRotation) 결정 로직
+	FRotator CombinedRotation;
 
-	return FinalLocation;
+	if (Config->bSpawnZeroRotation)
+	{
+		// [순위 1] 무조건 월드 기준 0도
+		CombinedRotation = FRotator::ZeroRotator;
+	}
+	else if (Config->bUseInstigatorRotation)
+	{
+		// [순위 2] 캐릭터가 바라보는 방향 기준
+		CombinedRotation = Instigator->GetActorRotation();
+	}
+	else
+	{
+		// [순위 3] 본의 현재 회전 + 에디터에서 설정한 오프셋
+		CombinedRotation = BaseRotation + Config->RotationOffset;
+	}
+
+	// 4. 결정된 회전 방향을 기반으로 위치 오프셋 계산
+	FVector TargetLocation = BaseLocation + CombinedRotation.RotateVector(Config->LocationOffset);
+
+	// 5. 지형 안착 로직
+	if (Config->bSnapToGround)
+	{
+		FHitResult FloorHit;
+		// TraceStartHeight만큼 위에서 아래로 스캔
+		FVector TraceStart = TargetLocation;
+		FVector TraceEnd = TargetLocation;
+		TraceEnd.Z -= 1000.f;
+
+		FCollisionQueryParams Params;
+		Params.AddIgnoredActor(Instigator);
+
+		if (World->LineTraceSingleByChannel(FloorHit, TraceStart, TraceEnd, Config->GroundTraceChannel, Params))
+		{
+			// 수평 위치는 유지, 높이만 지형에 맞춤
+			TargetLocation.X = FloorHit.Location.X;
+			TargetLocation.Y = FloorHit.Location.Y;
+
+			float FinalZOffset = Config->FloatingHeight;
+			if (Config->bUseBoxExtentOffset)
+			{
+				// 박스 절반 높이만큼 들어올려 바닥에 안착
+				FinalZOffset += Config->CollisionRadius.Z;
+			}
+
+			TargetLocation.Z = FloorHit.Location.Z + FinalZOffset;
+		}
+	}
+
+	// 디버그 드로잉 (최종 결과물 확인용)
+	DrawDebugBox(World, TargetLocation, Config->CollisionRadius, CombinedRotation.Quaternion(), FColor::Red, false, 5.0f, 0, 2.0f);
+
+	// 6. 계산된 트랜스폼 반환
+	return FTransform(CombinedRotation, TargetLocation);
 }
 
 void USummonRangeAtBone::InitializeRangeActor(ABaseRangeOverlapEffectActor* RangeActor, const USummonRangeByBoneGECConfig* Config, AActor* Causer, const FGameplayEffectContextHandle& Context) const

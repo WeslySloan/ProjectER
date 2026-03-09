@@ -28,14 +28,19 @@
 #include "Camera/TopDownCameraComp.h"
 
 #include "UI/UI_HUDFactory.h" // UI시스템 관리자
+#include "UI/UI_MainHUD.h" // Main UI
 
 #include "SkillSystem/SkillDataAsset.h"
 
 #include "Components/SceneCaptureComponent2D.h" // 미니맵용
 #include "Components/WidgetComponent.h" // HP바 위젯용
+#include "GameModeBase/State/ER_GameState.h"
 #include "UI/UI_HP_Bar.h" // HP바 위젯용
 
 #include "GameModeBase/State/ER_PlayerState.h"
+#include "LineOfSight/MainVisionRTManager.h"
+#include "LineOfSight/Management/VisionPlayerStateComp.h"
+
 
 ABaseCharacter::ABaseCharacter()
 {
@@ -62,7 +67,7 @@ ABaseCharacter::ABaseCharacter()
 	//new camera
 	TopDownCameraComp = CreateDefaultSubobject<UTopDownCameraComp>(TEXT("TopDownCameraComp"));
 	TopDownCameraComp->SetupAttachment(RootComponent);//temp attatchement-> it should follow the owner with lag
-	TopDownCameraComp->InitializeCompRequirements();
+	//TopDownCameraComp->InitializeCompRequirements();// this should not be done in the constructor!!!
 	TopDownCameraComp->SetAbsolute(true, true, true);
 
 	/* === 경로 설정 인덱스 초기화  === */
@@ -107,6 +112,7 @@ ABaseCharacter::ABaseCharacter()
 	//MinimapCaptureComponent->CaptureSource = ESceneCaptureSource::SCS_BaseColor; // 포스트 프로세싱 무효화
 }
 
+
 void ABaseCharacter::BeginPlay()
 {
 	Super::BeginPlay();
@@ -118,6 +124,15 @@ void ABaseCharacter::BeginPlay()
 	{
 		InitVisuals();
 	}
+
+
+	/*EVisionChannel CurrentVisionChannel=GetVisionChannelFromPlayerStateComp();
+	TeamID;//test-> did the team id been settled?
+	
+	if (TopDownCameraComp)
+	{
+		TopDownCameraComp->InitializeComponent();
+	}*/
 	
 	PreloadMontages();
 }
@@ -182,6 +197,8 @@ void ABaseCharacter::PossessedBy(AController* NewController)
 		InitVisuals();
 	}
 
+	bool bIsServer=HasAuthority();
+	
 	if (TopDownCameraComp)//disable the tick for the server
 	{
 		TopDownCameraComp->SetComponentTickEnabled(false);
@@ -233,12 +250,46 @@ void ABaseCharacter::OnRep_TeamID()
 	}
 	
 	UE_LOG(LogTemp, Warning, TEXT("%s"), *Message);
+	
 }
 
 void ABaseCharacter::Server_SetTeamID_Implementation(ETeamType NewTeamID)
 {
 	TeamID = NewTeamID;
 	OnRep_TeamID();
+}
+
+
+EVisionChannel ABaseCharacter::ConvertTeamToVisionChannel(ETeamType InTeamType)
+{
+	switch (InTeamType)
+	{
+		case ETeamType::None:
+		return EVisionChannel::None;
+		
+		case ETeamType::Team_A:
+		return EVisionChannel::TeamA;
+		
+		case ETeamType::Team_B:
+		return EVisionChannel::TeamB;
+		
+		case ETeamType::Team_C:
+		return EVisionChannel::TeamC;
+
+		default:
+		return EVisionChannel::None;
+	}
+}
+
+EVisionChannel ABaseCharacter::GetVisionChannelFromPlayerStateComp()
+{
+	if (const AER_PlayerState* ERPS = GetPlayerState<AER_PlayerState>())
+	{
+		return ConvertTeamToVisionChannel( ERPS->GetTeamType());
+	}
+	
+	//failed to get the vision channel -> return none
+	return EVisionChannel::None;
 }
 
 UAbilitySystemComponent* ABaseCharacter::GetAbilitySystemComponent() const
@@ -260,8 +311,13 @@ void ABaseCharacter::OnRep_PlayerState()
 	{
 		if (IsLocallyControlled())
 		{
+			//initialize the comp first
+			TopDownCameraComp->InitializeComponent();
+			
 			TopDownCameraComp->Activate();
 			TopDownCameraComp->SetComponentTickEnabled(true);
+			TopDownCameraComp->InitializeCompRequirements();
+			
 		}
 		else
 		{
@@ -269,6 +325,18 @@ void ABaseCharacter::OnRep_PlayerState()
 			TopDownCameraComp->SetComponentTickEnabled(false);
 		}
 	}
+
+	
+	EVisionChannel CurrentVisionChannel=GetVisionChannelFromPlayerStateComp();
+	//remade it to get the team id directly from player state
+	TeamID;//test-> did the team id been settled?
+	
+	OnPlayerStateChosen();
+}
+
+bool ABaseCharacter::IsLocalPlayerPawn()
+{
+	return IsLocallyControlled();
 }
 
 void ABaseCharacter::HandleLevelUp()
@@ -1495,8 +1563,50 @@ void ABaseCharacter::InitUI()
 			HUD->InitHeroDataFactory(HeroData);
 			HUD->InitASCFactory(GetAbilitySystemComponent());
 			PC->setMainHud(HUD->getMainHUD());
+		
+			// 팀원 UI 오픈
+			ETeamType MyTeam = GetTeamType();
 
-			UE_LOG(LogTemp, Warning, TEXT("HUD InitOverlay Success!"));
+			// UE_LOG(LogTemp, Error, TEXT("My Team : %d"), MyTeam);
+
+			if (AGameStateBase* GS = GetWorld()->GetGameState())
+			{
+				AER_GameState* ERGS = Cast<AER_GameState>(GS);
+				if (IsValid(ERGS))
+				{
+					//for (APlayerState* PS : GS->PlayerArray)
+					//{
+					//	AER_PlayerState* ERPS = Cast<AER_PlayerState>(PS);
+					//	if (IsValid(ERPS))
+					//	{
+					//		if (MyTeam == ERPS->TeamType)
+					//		{
+					//			countTeam++;
+					//		}
+					//	}
+					//}
+
+					int32 WidgetIndex = 0;
+
+					for (APlayerState* PS : GS->PlayerArray)
+					{
+						AER_PlayerState* ERPS = Cast<AER_PlayerState>(PS);
+
+						if (ERPS && ERPS != this->GetPlayerState() && ERPS->TeamType == MyTeam)
+						{
+							// 팀원의 ASC 가져오기
+							if (UAbilitySystemComponent* TargetASC = ERPS->GetAbilitySystemComponent())
+							{
+								HUD->getMainHUD()->SetTeamMemberData(WidgetIndex, TargetASC);
+								HUD->getMainHUD()->SetTeamWidgetVisible(WidgetIndex, true);
+
+								WidgetIndex++;
+							}
+						}
+					}
+				}
+			}
+			HUD->getMainHUD()->InitTeamData();
 		}
 		else
 		{
@@ -1535,8 +1645,12 @@ void ABaseCharacter::UpdateOverheadUI()
 	{
 		float CurrentHP = GetAbilitySystemComponent()->GetNumericAttribute(UBaseAttributeSet::GetHealthAttribute());
 		float MaxHP = GetAbilitySystemComponent()->GetNumericAttribute(UBaseAttributeSet::GetMaxHealthAttribute());
+		float CurrentMP = GetAbilitySystemComponent()->GetNumericAttribute(UBaseAttributeSet::GetStaminaAttribute());
+		float MaxMP = GetAbilitySystemComponent()->GetNumericAttribute(UBaseAttributeSet::GetMaxStaminaAttribute());
 
 		HPBarWidgetInstance->Update_HP_bar(CurrentHP, MaxHP);
+		HPBarWidgetInstance->Update_MP_bar(CurrentMP, MaxMP);
+		HPBarWidgetInstance->Update_LV_bar(1);
 	}
 }
 
@@ -1591,4 +1705,18 @@ void ABaseCharacter::OnLevelChanged()
 
 		HPBarWidgetInstance->Update_LV_bar(CurrentLV);
 	}
+}
+
+EVisionChannel ABaseCharacter::GetVisionChannelFromVisionPlayerStateComp()
+{
+	if (APlayerState* PC=GetPlayerState())
+	{
+		if (UVisionPlayerStateComp* PVC=PC->FindComponentByClass<UVisionPlayerStateComp>())
+		{
+			return PVC->GetTeamChannel();
+		}
+	}
+
+	//failed to get the vision channel
+	return EVisionChannel::None;
 }
