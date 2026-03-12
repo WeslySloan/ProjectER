@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
@@ -73,7 +73,7 @@ public:
 	virtual bool IsTargetable() const override;
     
 	// [인터페이스 구현] 하이라이트 (나중에 포스트 프로세스로 구현)
-	// virtual void HighlightActor(bool bIsHighlight) override;
+	virtual void HighlightActor(bool bIsHighlight, int32 StencilValue = 0) override;
 	
 	UFUNCTION(BlueprintCallable, Server, Reliable)
 	void Server_SetTeamID(ETeamType NewTeamID);
@@ -145,6 +145,7 @@ protected:
 	void InitAbilitySystem(); // ASC 초기화
 	void InitAttributes(); // AttributeSet 초기화
 	void InitVisuals(); // 메시, 애니메이션 로드
+	void InitPlayer(); // 플레이어(카메라 등) 로컬 초기화 통합 함수
 	
 public:
 	UPROPERTY(ReplicatedUsing=OnRep_HeroData, EditAnywhere, BlueprintReadWrite, Category = "Data", meta = (ExposeOnSpawn = true))

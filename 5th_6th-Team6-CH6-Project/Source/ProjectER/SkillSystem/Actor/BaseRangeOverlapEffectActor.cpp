@@ -7,7 +7,6 @@
 #include "AbilitySystemComponent.h"
 #include "CharacterSystem/Interface/TargetableInterface.h"
 
-
 // Sets default values
 ABaseRangeOverlapEffectActor::ABaseRangeOverlapEffectActor()
 {
@@ -15,29 +14,19 @@ ABaseRangeOverlapEffectActor::ABaseRangeOverlapEffectActor()
 	bReplicates = true;
 }
 
-void ABaseRangeOverlapEffectActor::InitializeEffectData(const TArray<FGameplayEffectSpecHandle>& InEffectSpecHandles, AActor* InInstigatorActor, const FVector& InCollisionSize, bool bInHitOncePerTarget)
+void ABaseRangeOverlapEffectActor::InitializeEffectData(const TArray<FGameplayEffectSpecHandle>& InEffectSpecHandles, AActor* InInstigatorActor, const FVector& InCollisionSize, bool bInHitOncePerTarget, const UObject* InHitTargetCueSourceObject, const FGameplayCueParameters& InHitTargetCueParameters)
 {
 	EffectSpecHandles = InEffectSpecHandles;
 	InstigatorActor = InInstigatorActor;
+	SetInstigator(Cast<APawn>(InInstigatorActor));
 	bHitOncePerTarget = bInHitOncePerTarget;
+	HitTargetCueSourceObject = InHitTargetCueSourceObject;
+	HitTargetCueParameters = InHitTargetCueParameters;
 
 	PendingCollisionSize = InCollisionSize;
 	bHasPendingCollisionSize = true;
 	ApplyCollisionSize(PendingCollisionSize);
 }
-
-//void ABaseRangeOverlapEffectActor::InitializeEffectData(const TArray<FGameplayEffectSpecHandle>& InEffectSpecHandles, AActor* InInstigatorActor, bool bInHitOncePerTarget)
-//{
-//	EffectSpecHandles = InEffectSpecHandles;
-//	InstigatorActor = InInstigatorActor;
-//	bHitOncePerTarget = bInHitOncePerTarget;
-//	bHasPendingCollisionSize = true;
-//}
-
-//void ABaseRangeOverlapEffectActor::SetCollisionSize(const FVector& InCollisionSize)
-//{
-//	ApplyCollisionSize(InCollisionSize);
-//}
 
 // Called when the game starts or when spawned
 void ABaseRangeOverlapEffectActor::BeginPlay()
@@ -117,6 +106,19 @@ void ABaseRangeOverlapEffectActor::OnShapeBeginOverlap(UPrimitiveComponent* Over
 		if (EffectSpecHandle.IsValid())
 		{
 			TargetASC->ApplyGameplayEffectSpecToSelf(*EffectSpecHandle.Data.Get());
+		}
+	}
+
+	UAbilitySystemComponent* const InstigatorASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(InstigatorActor);
+	if (IsValid(InstigatorASC) && HitTargetCueParameters.OriginalTag.IsValid())
+	{
+		FGameplayCueParameters CueParameters = HitTargetCueParameters;
+		CueParameters.Location = OtherActor->GetActorLocation();
+		CueParameters.EffectCauser = this;
+		CueParameters.SourceObject = HitTargetCueSourceObject;
+		{
+			FScopedPredictionWindow ForcedWindow(InstigatorASC, FPredictionKey(), false);
+			InstigatorASC->ExecuteGameplayCue(CueParameters.OriginalTag, CueParameters);
 		}
 	}
 

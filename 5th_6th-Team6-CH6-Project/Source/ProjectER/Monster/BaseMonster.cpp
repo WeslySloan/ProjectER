@@ -4,6 +4,8 @@
 #include "Monster/Data/MonsterDataAsset.h"
 #include "Monster/Data/BaseMonsterTableRow.h"
 #include "GameModeBase/GameMode/ER_InGameMode.h"
+#include "GameModeBase/State/ER_GameState.h"
+#include "GameModeBase/State/ER_PlayerState.h"
 #include "CharacterSystem/Character/BaseCharacter.h"
 #include "ItemSystem/Data/BaseItemData.h"
 #include "SkillSystem/SkillDataAsset.h"
@@ -25,9 +27,10 @@
 #include "Engine/StreamableManager.h"
 
 ABaseMonster::ABaseMonster()
-	:TargetPlayer(nullptr),
+	:
 	StartLocation(FVector::ZeroVector),
 	StartRotator(FRotator::ZeroRotator),
+	TargetPlayer(nullptr),
 	bIsCombat(false),
 	bIsDead(false)
 {
@@ -123,6 +126,18 @@ void ABaseMonster::PossessedBy(AController* newController)
 		MonsterRangeComp->OnPlayerCountZero.AddDynamic(this, &ABaseMonster::OnPlayerCountZeroHandle);
 		MonsterRangeComp->OnPlayerOut.AddDynamic(this, &ABaseMonster::OnTargetLostHandle);
 		
+		ASC->RegisterGameplayTagEvent(
+			FGameplayTag::RequestGameplayTag("State.Debuff.Hard.Stun"),
+			EGameplayTagEventType::AnyCountChange
+			).AddUObject(this, &ABaseMonster::OnCCChanged);
+		ASC->RegisterGameplayTagEvent(
+			FGameplayTag::RequestGameplayTag("State.Debuff.Hard.Airborne"),
+			EGameplayTagEventType::NewOrRemoved
+			).AddUObject(this, &ABaseMonster::OnCCChanged);
+		ASC->RegisterGameplayTagEvent(
+			FGameplayTag::RequestGameplayTag("State.Debuff.Soft.Root"),
+			EGameplayTagEventType::NewOrRemoved
+			).AddUObject(this, &ABaseMonster::OnCCChanged);
 	}
 }
 
@@ -135,15 +150,12 @@ void ABaseMonster::BeginPlay()
 		StartLocation = GetActorLocation();
 		StartRotator = GetActorRotation();
 	}
-	else
+	if (GetNetMode() != NM_DedicatedServer)
 	{
 		// UI 로직
 		InitHPBar();
 		AttributeSet->OnHealthChanged.AddDynamic(this, &ABaseMonster::OnHealthChangedHandle);
 	}
-
-
-	
 }
 
 void ABaseMonster::Tick(float DeltaTime)
@@ -188,7 +200,7 @@ void ABaseMonster::OnMonsterDataLoaded(FPrimaryAssetId MonsterAssetId, float Lev
 	);
 	if (IsValid(MonsterData) == false)
 	{
-		UE_LOG(LogTemp, Error, TEXT("ABaseMonster::InitMonsterData - MonsterData is Not Valid!"));
+		UE_LOG(LogTemp, Warning, TEXT("ABaseMonster::InitMonsterData - MonsterData is Not Valid!"));
 	}
 
 
@@ -356,7 +368,6 @@ void ABaseMonster::OnRep_MonsterData()
 
 void ABaseMonster::OnHealthChangedHandle(float CurrentHP, float MaxHP)
 {
-	// UpdateHP
 	UUserWidget* Widget = HPBarWidgetComp->GetUserWidgetObject();
 	UProgressBar* HPBar = Cast<UProgressBar>(Widget->GetWidgetFromName(TEXT("HealthBar")));
 	HPBar->SetPercent(CurrentHP / MaxHP);
@@ -496,21 +507,61 @@ void ABaseMonster::GameplayEffectSetByCaller(AActor* Player, TSubclassOf<UGamepl
 		UE_LOG(LogTemp, Warning, TEXT("ABaseMonster::GiveRewardsToPlayer : Not MonsterData"));
 		return;
 	}
-		
-	//타겟에게 GE를 이용해 경험치 전달
-	FGameplayEffectContextHandle ContextHandle = ASC->MakeEffectContext();
-	ContextHandle.AddSourceObject(this);
-	ContextHandle.AddInstigator(this, nullptr);
-	FGameplayEffectSpecHandle SpecHandle = ASC->MakeOutgoingSpec(GE, 1, ContextHandle);
-	UAbilitySystemComponent* TargetASC =
-		UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Player);
+	
+	ABaseCharacter* BC = Cast<ABaseCharacter>(Player);
+	int TeamIndex = (int)BC->GetTeamType();
 
-	SpecHandle.Data->SetSetByCallerMagnitude(
-		Tag,
-		Amount
-	);
+	AER_GameState* EPS = GetWorld()->GetGameState<AER_GameState>();
+	TArray<TWeakObjectPtr<AER_PlayerState>> TeamPSArray = EPS->GetTeamArray(TeamIndex);
 
-	TargetASC->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data);
+	FVector MonsterLocation = GetActorLocation();
+	for (auto TeamPS : TeamPSArray)
+	{
+		if (!TeamPS.IsValid()) continue;
+
+		APlayerController* PC = TeamPS->GetPlayerController();
+		if (!PC) continue;
+
+		APawn* Pawn = PC->GetPawn();
+		if (!Pawn) continue;
+
+		FVector TeamLocation = Pawn->GetActorLocation();
+		float DistSq = FVector::DistSquared(TeamLocation, MonsterLocation);
+		if (DistSq > 1000000.f) // 1000보다 멀면 못받음
+		{
+			TeamPSArray.Remove(TeamPS);
+		}
+	}
+
+	float OffsetAmount;
+	int NearCount = TeamPSArray.Num();
+	switch (NearCount)
+	{
+	case 1: OffsetAmount = Amount * 1;
+		break;
+	case 2: OffsetAmount = Amount * 0.8f;
+		break;
+	case 3: OffsetAmount = Amount * 0.7f;
+		break;
+	default: OffsetAmount = Amount * 0.7f; 
+		break;
+	}
+
+	for(auto TeamPS : TeamPSArray)
+	{
+		if (!TeamPS.IsValid()) continue;
+		FGameplayEffectContextHandle ContextHandle = ASC->MakeEffectContext();;
+		ContextHandle.AddInstigator(this, nullptr);
+		FGameplayEffectSpecHandle SpecHandle = ASC->MakeOutgoingSpec(GE, 1, ContextHandle);
+		SpecHandle.Data->SetSetByCallerMagnitude(
+			Tag,
+			OffsetAmount
+		); 
+
+		UAbilitySystemComponent* TargetASC = TeamPS->GetAbilitySystemComponent();
+		if (!TargetASC) continue;
+		TargetASC->ApplyGameplayEffectSpecToSelf(*SpecHandle.Data);
+	}
 }
 
 void ABaseMonster::TryActivateByDynamicTag(FGameplayTag InputTag)
@@ -521,7 +572,7 @@ void ABaseMonster::TryActivateByDynamicTag(FGameplayTag InputTag)
 		{
 			if (!ASC->TryActivateAbility(Spec.Handle))
 			{
-				UE_LOG(LogTemp, Error, TEXT("ABaseMonster::TryActivateByDynamicTag : Skill Fail"));
+				UE_LOG(LogTemp, Warning, TEXT("ABaseMonster::TryActivateByDynamicTag : Skill Fail"));
 			}
 			break;
 		}
@@ -609,6 +660,7 @@ void ABaseMonster::SendAttackRangeEvent(float AttackRange)
 {
 	if (IsValid(TargetPlayer) == false)
 	{
+		//SendStateTreeEvent(MonsterTags.TargetOnEventTag);
 		UE_LOG(LogTemp, Warning, TEXT("ABaseMonster::SendAttackRangeEvent : Not Player"));
 		return;
 	}
@@ -655,23 +707,6 @@ UStateTreeComponent* ABaseMonster::GetStateTreeComponent()
 
 void ABaseMonster::SetTargetPlayer(AActor* Target)
 {
-	//if (TargetPlayer == nullptr)
-	//{
-	//	TargetPlayer = Target;
-	//}
-	//else
-	//{
-	//	const float OldTargetDistance = FVector::DistSquared(
-	//		TargetPlayer->GetActorLocation(), GetActorLocation());
-
-	//	const float NewTargetDistance = FVector::DistSquared(
-	//		Target->GetActorLocation(), GetActorLocation());
-
-	//	if (OldTargetDistance > NewTargetDistance)
-	//	{
-	//		TargetPlayer = Target;
-	//	}
-	//}
 	TargetPlayer = Target;
 }
 
@@ -682,7 +717,16 @@ AActor* ABaseMonster::GetTargetPlayer()
 
 void ABaseMonster::SetbIsCombat(bool value)
 {
-	bIsCombat = value;
+	if (bIsCombat != value)
+	{
+		bIsCombat = value;
+		
+		// 리슨 서버 호스트의 경우 OnRep 함수가 자동 호출되지 않으므로 수동으로 호출해 줍니다.
+		if (GetNetMode() != NM_DedicatedServer)
+		{
+			OnRep_IsCombat();
+		}
+	}
 }
 
 bool ABaseMonster::GetbIsCombat()
@@ -692,7 +736,15 @@ bool ABaseMonster::GetbIsCombat()
 
 void ABaseMonster::SetbIsDead(bool value)
 {
-	bIsDead = value;
+	if (bIsDead != value)
+	{
+		bIsDead = value;
+		
+		if (GetNetMode() != NM_DedicatedServer)
+		{
+			OnRep_IsDead();
+		}
+	}
 }
 
 bool ABaseMonster::GetbIsDead()
@@ -724,6 +776,21 @@ void ABaseMonster::Server_SetTeamID_Implementation(ETeamType NewTeamID)
 {
 	TeamID = NewTeamID;
 	OnRep_TeamID();
+}
+
+void ABaseMonster::HighlightActor(bool bIsHighlight, int32 StencilValue)
+{
+	if (USkeletalMeshComponent* MyMesh = GetMesh())
+	{
+		// 커스텀 뎁스 렌더링 켜기/끄기
+		MyMesh->SetRenderCustomDepth(bIsHighlight);
+
+		if (bIsHighlight)
+		{
+			// 스텐실 값 부여 (어떤 색으로 아웃라인을 그릴지 포스트 프로세스에 전달)
+			MyMesh->SetCustomDepthStencilValue(StencilValue);
+		}
+	}
 }
 
 void ABaseMonster::OnRep_TeamID()
@@ -769,15 +836,18 @@ void ABaseMonster::Death()
 	SendStateTreeEvent(MonsterTags.DeathEventTag);
 }
 
-
-
-void ABaseMonster::ASCTagCheck()
+void ABaseMonster::OnCCChanged(FGameplayTag Tag, int32 NewCount)
 {
-	FGameplayTagContainer OwnedTags;
-	ASC->GetOwnedGameplayTags(OwnedTags);
-
-	for (const FGameplayTag& Tag : OwnedTags)
+	if (NewCount > 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Tag: %s"), *Tag.ToString());
+		//ASC->CancelAllAbilities();
+		SendStateTreeEvent(FGameplayTag::RequestGameplayTag("Event.State.Debuff.Hard"));
+		// Hard CC 적용됨
+	}
+	else
+	{
+		//SetbIsCombat(false);
+		SendStateTreeEvent(MonsterTags.HitEventTag);
+		// Hard CC 해제됨
 	}
 }

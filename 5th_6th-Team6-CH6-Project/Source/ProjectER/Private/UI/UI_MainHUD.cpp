@@ -223,7 +223,7 @@ void UUI_MainHUD::InitASCHud(UAbilitySystemComponent* _ASC)
 
 void UUI_MainHUD::StartRespawn(float _RespawnTime)
 {
-	UE_LOG(LogTemp, Error, TEXT("StartRespawn called with time: %f"), _RespawnTime);
+	UE_LOG(LogTemp, Warning, TEXT("StartRespawn called with time: %f"), _RespawnTime);
 }
 
 void UUI_MainHUD::NativeConstruct()
@@ -242,7 +242,7 @@ void UUI_MainHUD::NativeConstruct()
         }
         else
         {
-            UE_LOG(LogTemp, Error, TEXT("[UI_MainHUD] Grid_item not found even manually!"));
+            UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] Grid_item not found even manually!"));
         }
     }
     else
@@ -621,15 +621,15 @@ void UUI_MainHUD::SkillFirePressed(ESkillKey _Index)
     if (!ASC) return;
 
     int32 Index = static_cast<int32>(_Index);
-	UE_LOG(LogTemp, Error, TEXT("SkillFirePressed called with index: %d"), Index);
+	// UE_LOG(LogTemp, Warning, TEXT("SkillFirePressed called with index: %d"), Index);
 
     if (HeroData && HeroData->SkillDataAsset.IsValidIndex(Index))
     {
         USkillDataAsset* SkillAsset = HeroData->SkillDataAsset[Index].LoadSynchronous();
-		UE_LOG(LogTemp, Error, TEXT("Loaded SkillDataAsset for index %d: %s"), Index, *GetNameSafe(SkillAsset));
+		// UE_LOG(LogTemp, Warning, TEXT("Loaded SkillDataAsset for index %d: %s"), Index, *GetNameSafe(SkillAsset));
         if (SkillAsset && SkillAsset->SkillConfig)
         {
-			UE_LOG(LogTemp, Error, TEXT("SkillConfig found for index %d: %s"), Index, *GetNameSafe(SkillAsset->SkillConfig));
+			// UE_LOG(LogTemp, Warning, TEXT("SkillConfig found for index %d: %s"), Index, *GetNameSafe(SkillAsset->SkillConfig));
             FGameplayTag InputTag = SkillAsset->SkillConfig->Data.InputKeyTag;
             ABasePlayerController* PC = Cast<ABasePlayerController>(GetOwningPlayer());
 
@@ -637,7 +637,7 @@ void UUI_MainHUD::SkillFirePressed(ESkillKey _Index)
             {
 				PC->AbilityInputTagPressed(InputTag);
 				float CoolTime = SkillAsset->SkillConfig->Data.BaseCoolTime.GetValueAtLevel(1);
-				UE_LOG(LogTemp, Error, TEXT("%d_Skill, TAG : %s, CoolTime : %f"), 0, *InputTag.ToString(), CoolTime);
+				// UE_LOG(LogTemp, Warning, TEXT("%d_Skill, TAG : %s, CoolTime : %f"), 0, *InputTag.ToString(), CoolTime);
 
             }
 
@@ -980,10 +980,11 @@ void UUI_MainHUD::SetTeamWidgetVisible(int32 TeamIndex, bool bIsVisible)
     }
 }
 
-void UUI_MainHUD::SetTeamMemberData(int32 TeamIndex, UAbilitySystemComponent* _ASC)
+void UUI_MainHUD::SetTeamMemberData(int32 TeamIndex, UAbilitySystemComponent* _ASC, UTexture2D* HeadIcon)
 {
     if (_ASC == nullptr) return;
     TeamASCMap.Add(TeamIndex, _ASC);
+    UpdateTeamHead(TeamIndex, HeadIcon);
 }
 
 void UUI_MainHUD::InitTeamData()
@@ -1012,6 +1013,14 @@ void UUI_MainHUD::InitTeamData()
 				UpdateTeamLV(TeamIndex, BaseAS->GetLevel());
             }
         }
+    }
+}
+
+void UUI_MainHUD::SetMyFaceIcon(UTexture2D* HeadIcon)
+{
+    if (IsValid(IMG_Head))
+    {
+        IMG_Head->SetBrushFromTexture(HeadIcon);
     }
 }
 
@@ -1095,7 +1104,7 @@ void UUI_MainHUD::UpdateTeamLV(int32 TeamIndex, int32 CurrentLV)
     {
         if(IsValid(TeamLevel_01))
         {
-			UE_LOG(LogTemp, Error, TEXT("Updating Team 1 Level: %d"), CurrentLV);
+			// UE_LOG(LogTemp, Error, TEXT("Updating Team 1 Level: %d"), CurrentLV);
             TeamLevel_01->SetText(FText::AsNumber(CurrentLV));
         }
     }
@@ -1103,10 +1112,29 @@ void UUI_MainHUD::UpdateTeamLV(int32 TeamIndex, int32 CurrentLV)
     {
         if (IsValid(TeamLevel_02))
         {
-            UE_LOG(LogTemp, Error, TEXT("Updating Team 1 Level: %d"), CurrentLV);
+            // UE_LOG(LogTemp, Error, TEXT("Updating Team 1 Level: %d"), CurrentLV);
             TeamLevel_02->SetText(FText::AsNumber(CurrentLV));
         }
     }
+}
+
+void UUI_MainHUD::UpdateTeamHead(int32 TeamIndex, UTexture2D* NewHeadTexture)
+{
+    if (TeamIndex > MAX_TEAMMATE) return;
+    if(TeamIndex == 0)
+    {
+        if(IsValid(TeamHead_01) && NewHeadTexture)
+        {
+            TeamHead_01->SetBrushFromTexture(NewHeadTexture);
+        }
+    }
+    else if (TeamIndex == 1)
+    {
+        if (IsValid(TeamHead_02) && NewHeadTexture)
+        {
+            TeamHead_02->SetBrushFromTexture(NewHeadTexture);
+        }
+	}
 }
 
 UWidgetAnimation* UUI_MainHUD::GetWidgetAnimationByName(FName AnimName) const
@@ -1119,7 +1147,7 @@ UWidgetAnimation* UUI_MainHUD::GetWidgetAnimationByName(FName AnimName) const
         if (Anim && Anim->GetMovieScene())
         {
             FName InternalName = Anim->GetMovieScene()->GetFName();
-			UE_LOG(LogTemp, Error, TEXT("Checking Animation: %s"), *InternalName.ToString());
+			// UE_LOG(LogTemp, Error, TEXT("Checking Animation: %s"), *InternalName.ToString());
             if (InternalName == AnimName)
             {
                 return Anim;
@@ -1136,7 +1164,7 @@ void UUI_MainHUD::UpdateInventoryUI()
     UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] UpdateInventoryUI called!"));
     if (!Grid_item)
     {
-        UE_LOG(LogTemp, Error, TEXT("[UI_MainHUD] Grid_item is null!"));
+        // UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] Grid_item is null!"));
         return;
     }
 
@@ -1146,21 +1174,21 @@ void UUI_MainHUD::UpdateInventoryUI()
     APlayerController* PC = GetOwningPlayer();
     if (!PC)
     {
-        UE_LOG(LogTemp, Error, TEXT("[UI_MainHUD] PlayerController is null!"));
+        // UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] PlayerController is null!"));
         return;
     }
 
     APawn* Pawn = PC->GetPawn();
     if (!Pawn)
     {
-        UE_LOG(LogTemp, Error, TEXT("[UI_MainHUD] Pawn is null!"));
+        // UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] Pawn is null!"));
         return;
     }
 
     UBaseInventoryComponent* InventoryComp = Pawn->FindComponentByClass<UBaseInventoryComponent>();
     if (!InventoryComp)
     {
-        UE_LOG(LogTemp, Error, TEXT("[UI_MainHUD] InventoryComponent not found!"));
+        // UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] InventoryComponent not found!"));
         return;
     }
 
@@ -1176,7 +1204,7 @@ void UUI_MainHUD::UpdateInventoryUI()
 
     if (!InventoryProperty)
     {
-        UE_LOG(LogTemp, Error, TEXT("[UI_MainHUD] Cannot find InventoryContents property!"));
+        UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] Cannot find InventoryContents property!"));
         return;
     }
 
@@ -1185,12 +1213,12 @@ void UUI_MainHUD::UpdateInventoryUI()
     FArrayProperty* ArrayProp = CastField<FArrayProperty>(InventoryProperty);
     if (!ArrayProp)
     {
-        UE_LOG(LogTemp, Error, TEXT("[UI_MainHUD] ArrayProp is null!"));
+        UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] ArrayProp is null!"));
         return;
     }
 
     FScriptArrayHelper ArrayHelper(ArrayProp, PropertyPtr);
-    UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] Inventory has %d items"), ArrayHelper.Num());
+    // UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] Inventory has %d items"), ArrayHelper.Num()); 패키징용 로그 주석
 
     // Grid의 각 버튼에 아이템 아이콘 설정
     for (int32 i = 0; i < GridChildren.Num(); ++i)
@@ -1203,23 +1231,22 @@ void UUI_MainHUD::UpdateInventoryUI()
             continue;
         }
 
-        UE_LOG(LogTemp, Log, TEXT("[UI_MainHUD] Processing Button %d: %s"), i, *ItemButton->GetName());
+        // UE_LOG(LogTemp, Log, TEXT("[UI_MainHUD] Processing Button %d: %s"), i, *ItemButton->GetName()); 패키징용 로그 주석
 
         // 버튼의 자식 이미지 찾기
         TArray<UWidget*> ButtonChildren = ItemButton->GetAllChildren();
-        UE_LOG(LogTemp, Log, TEXT("[UI_MainHUD] Button %d has %d children"), i, ButtonChildren.Num());
+        // UE_LOG(LogTemp, Log, TEXT("[UI_MainHUD] Button %d has %d children"), i, ButtonChildren.Num()); 패키징용 로그 주석
 
         UImage* IconImage = nullptr;
         for (int32 j = 0; j < ButtonChildren.Num(); ++j)
         {
             UWidget* Child = ButtonChildren[j];
-            UE_LOG(LogTemp, Log, TEXT("[UI_MainHUD] Button child %d type: %s, name: %s"),
-                j, *Child->GetClass()->GetName(), *Child->GetName());
+            // UE_LOG(LogTemp, Log, TEXT("[UI_MainHUD] Button child %d type: %s, name: %s"), j, *Child->GetClass()->GetName(), *Child->GetName()); 패키징용 로그 주석
 
             IconImage = Cast<UImage>(Child);
             if (IconImage)
             {
-                UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] Found Image in Button %d!"), i);
+                // UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] Found Image in Button %d!"), i); 패키징용 로그 주석
                 break;
             }
         }
@@ -1252,7 +1279,7 @@ void UUI_MainHUD::UpdateInventoryUI()
                     }
                     else
                     {
-                        UE_LOG(LogTemp, Error, TEXT("[UI_MainHUD] Failed to load icon for slot %d"), i);
+                        UE_LOG(LogTemp, Warning, TEXT("[UI_MainHUD] Failed to load icon for slot %d"), i);
                     }
                 }
                 else

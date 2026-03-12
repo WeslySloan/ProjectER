@@ -5,6 +5,8 @@
 #include "GameplayEffectExtension.h"
 #include "Components/StateTreeComponent.h"
 
+#include "CharacterSystem/Character/BaseCharacter.h"
+
 UBaseMonsterAttributeSet::UBaseMonsterAttributeSet()
 {
 
@@ -38,18 +40,18 @@ void UBaseMonsterAttributeSet::PostGameplayEffectExecute(const FGameplayEffectMo
 	if (Attribute == GetIncomingDamageAttribute())
 	{
 		// 공격 대상 설정
-		const FGameplayEffectContextHandle& Context =
-			Data.EffectSpec.GetEffectContext();
-		
-		//AActor* Target = Context.GetInstigator(); // 인스티게이터로
-		AActor* Target = Context.GetEffectCauser(); 
+		const FGameplayEffectContextHandle& Context = Data.EffectSpec.GetEffectContext();
+		AActor* Target = Cast<ABaseCharacter>(Context.GetEffectCauser()) ? Context.GetEffectCauser() : Context.GetInstigator();
 		ABaseMonster* Monster = Cast<ABaseMonster>(GetOwningActor());
 		if (IsValid(Target) == false)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("UBaseMonsterAttributeSet::PostGameplayEffectExecute : Not Target"));
 			return;
 		}
-
+		if (Monster->GetNetMode() != NM_DedicatedServer)
+		{
+			OnHealthChanged.Broadcast(GetHealth(), GetMaxHealth());
+		}
 		if (GetHealth() <= 0.f)
 		{
 			OnMonsterDeath.Broadcast(Target);
@@ -69,10 +71,12 @@ void UBaseMonsterAttributeSet::PostAttributeChange(const FGameplayAttribute& Att
 
 void UBaseMonsterAttributeSet::OnRep_Health(const FGameplayAttributeData& OldHealth)
 {
+	Super::OnRep_Health(OldHealth);
 	OnHealthChanged.Broadcast(GetHealth(), GetMaxHealth());
 }
 
 void UBaseMonsterAttributeSet::OnRep_MoveSpeed(const FGameplayAttributeData& OldHealth)
 {
+	Super::OnRep_MoveSpeed(OldHealth);
 	OnMoveSpeedChanged.Broadcast(OldHealth.GetBaseValue(), GetMoveSpeed());
 }

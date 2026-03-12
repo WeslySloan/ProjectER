@@ -40,8 +40,10 @@ public:
 	UStateTreeComponent* GetStateTreeComponent();
 	void SetTargetPlayer(AActor* Target);
 	AActor* GetTargetPlayer();
+	UFUNCTION(BlueprintCallable)
 	void SetbIsCombat(bool Target);
 	bool GetbIsCombat();
+	UFUNCTION(BlueprintCallable)
 	void SetbIsDead(bool Target);
 	bool GetbIsDead();
 	UMonsterRangeComponent* GetMonsterRangeComp() { return MonsterRangeComp; };
@@ -247,7 +249,7 @@ public:
 	virtual bool IsTargetable() const override;
     
 	// [인터페이스 구현] 하이라이트 (나중에 포스트 프로세스로 구현)
-	// virtual void HighlightActor(bool bIsHighlight) override;
+	virtual void HighlightActor(bool bIsHighlight, int32 StencilValue = 0) override;
 	
 	UFUNCTION()
 	void OnRep_TeamID();
@@ -278,7 +280,7 @@ public:
 
 	// Test용
 	UFUNCTION(BlueprintCallable)
-	void ASCTagCheck();
+	void OnCCChanged(FGameplayTag Tag, int32 NewCount);
 
 };
 

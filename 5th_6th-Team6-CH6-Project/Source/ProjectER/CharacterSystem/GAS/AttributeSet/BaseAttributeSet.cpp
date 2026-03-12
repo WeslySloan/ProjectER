@@ -112,10 +112,30 @@ void UBaseAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallba
 	{
 		SetHealth(FMath::Clamp(GetHealth(), 0.0f, GetMaxHealth()));
 		// UE_LOG(LogTemp, Warning, TEXT("!!! HP 변경 감지됨 !!! 현재 HP: %f / %f"), GetHealth(), GetMaxHealth());
+		if (AActor* AvatarActor = GetOwningAbilitySystemComponent()->GetAvatarActor())
+		{
+			if (AvatarActor->HasAuthority())
+			{
+				if (ABaseCharacter* TargetChar = Cast<ABaseCharacter>(AvatarActor))
+				{
+					TargetChar->OnHealthChanged();
+				}
+			}
+		}
 	}
 	else if (Data.EvaluatedData.Attribute == GetStaminaAttribute())
 	{
 		SetStamina(FMath::Clamp(GetStamina(), 0.0f, GetMaxStamina()));
+		if (AActor* AvatarActor = GetOwningAbilitySystemComponent()->GetAvatarActor())
+		{
+			if (AvatarActor->HasAuthority())
+			{
+				if (ABaseCharacter* TargetChar = Cast<ABaseCharacter>(AvatarActor))
+				{
+					TargetChar->OnStaminaChanged();
+				}
+			}
+		}
 	}
 	
 	// 데미지(Damage : Data.Amount.Damage) 처리
@@ -137,7 +157,18 @@ void UBaseAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallba
 			const float NewHealth = OldHealth - LocalDamage;
 			
 			SetHealth(FMath::Clamp(NewHealth, 0.0f, GetMaxHealth()));
-			// UE_LOG(LogTemp, Warning, TEXT("Hp %f / %f "),  GetHealth(), GetMaxHealth());
+			
+			// Host Update
+			if (AActor* AvatarActor = GetOwningAbilitySystemComponent()->GetAvatarActor())
+			{
+				if (AvatarActor->HasAuthority())
+				{
+					if (ABaseCharacter* HitChar = Cast<ABaseCharacter>(AvatarActor))
+					{
+						HitChar->OnHealthChanged();
+					}
+				}
+			}
 
 			// [전민성] 어시스트, 사망 판정 추가
 			if (!GetWorld() || GetWorld()->GetNetMode() == NM_Client)
@@ -252,6 +283,10 @@ void UBaseAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallba
 				{
 					// 빈사 상태 전용 체력으로 세팅 (GetMaxHealth() * 0.5f 설정)
 					SetHealth(GetMaxHealth() * 0.5f); 
+					if (TargetChar && TargetChar->HasAuthority())
+					{
+						TargetChar->OnHealthChanged();
+					}
 
 					// 빈사 로직 실행 (상태 변환 및 GE 적용)
 					TargetChar->HandleDown();
@@ -299,19 +334,25 @@ void UBaseAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallba
 			else
 			{
 				// [로그 추가] 캐싱된 커브가 없음
-				UE_LOG(LogTemp, Error, TEXT("[AttributeSet] CachedMaxXPCurve is NULL! Level Up Logic Skipped."));
+				// UE_LOG(LogTemp, Error, TEXT("[AttributeSet] CachedMaxXPCurve is NULL! Level Up Logic Skipped."));
 			}
 
 			// 남은 XP 적용 및 레벨 업
 			SetXP(NewXP);
 			SetLevel(CurrentLevel);
 			
-			// 레벨업이 발생 시 스탯 갱신 요청
 			if (LevelUpCount > 0)
 			{
-				if (ABaseCharacter* TargetChar = Cast<ABaseCharacter>(Data.Target.GetAvatarActor()))
+				if (AActor* AvatarActor = Data.Target.GetAvatarActor())
 				{
-					TargetChar->HandleLevelUp(); 
+					if (AvatarActor->HasAuthority())
+					{
+						if (ABaseCharacter* TargetChar = Cast<ABaseCharacter>(AvatarActor))
+						{
+							TargetChar->HandleLevelUp(); 
+							TargetChar->OnLevelChanged();
+						}
+					}
 				}
 			}
 		}
@@ -362,7 +403,6 @@ void UBaseAttributeSet::OnRep_MaxXP(const FGameplayAttributeData& OldMaxXP)
 void UBaseAttributeSet::OnRep_Health(const FGameplayAttributeData& OldHealth)
 {
 	GAMEPLAYATTRIBUTE_REPNOTIFY(UBaseAttributeSet, Health, OldHealth);
-	
 	/// mpyi _ 머리 위 HUD 모든 플레이어 동기화를 위함
 	if (ABaseCharacter* TargetChar = Cast<ABaseCharacter>(GetOwningAbilitySystemComponent()->GetAvatarActor()))
 	{
