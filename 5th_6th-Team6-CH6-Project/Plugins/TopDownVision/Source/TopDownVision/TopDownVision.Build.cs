@@ -30,6 +30,8 @@ public class TopDownVision : ModuleRules
 				"Core",
 				// ... add other public dependencies that you statically link with here ...
 				"Projects",// for plugin module (IPluginManager::Get())
+				
+				"DoubleRTBufferDrawer",// for Main RT Drawer
 			}
 			);
 			
@@ -51,12 +53,27 @@ public class TopDownVision : ModuleRules
 				"RenderCore",
 				"RHI",//render hardware interface
 				
+				/*// for editor function to bake World Obstacle maps
+				"UnrealEd", 
+				"EditorScriptingUtilities", */
+				
+				/*"AssetTools",
+				"KismetCompiler",*/ // also the editor module
+				
+				"NetCore",// for FastArraySerializer
+			});
+		
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[]
+			{
 				// for editor function to bake World Obstacle maps
 				"UnrealEd", 
 				"EditorScriptingUtilities", 
 				"AssetTools",
-				"KismetCompiler",
+				"KismetCompiler", // also the editor module
 			});
+		}
 		
 		
 		DynamicallyLoadedModuleNames.AddRange(

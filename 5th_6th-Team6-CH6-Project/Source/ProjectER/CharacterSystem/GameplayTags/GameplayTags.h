@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "NativeGameplayTags.h"
@@ -150,6 +150,7 @@ namespace ProjectER
 		namespace Interact
 		{
 			UE_DECLARE_GAMEPLAY_TAG_EXTERN(OpenBox);    // 상자 오픈
+			UE_DECLARE_GAMEPLAY_TAG_EXTERN(Teleport);   // 텔레포트 상호작용
 		}
 	}
 
@@ -199,10 +200,25 @@ namespace ProjectER
 				UE_DECLARE_GAMEPLAY_TAG_EXTERN(R);
 			}
 		}
+		namespace Decal
+		{
+			namespace Skill
+			{
+				UE_DECLARE_GAMEPLAY_TAG_EXTERN(AutoAttack);
+				UE_DECLARE_GAMEPLAY_TAG_EXTERN(Q);
+				UE_DECLARE_GAMEPLAY_TAG_EXTERN(W);
+				UE_DECLARE_GAMEPLAY_TAG_EXTERN(E);
+				UE_DECLARE_GAMEPLAY_TAG_EXTERN(R);
+			}
+		}
 
 		namespace Combat
 		{
 			UE_DECLARE_GAMEPLAY_TAG_EXTERN(Hit);
+			namespace HitEffect
+			{
+				UE_DECLARE_GAMEPLAY_TAG_EXTERN(Aurora);
+			}
 			UE_DECLARE_GAMEPLAY_TAG_EXTERN(Revive);
 			UE_DECLARE_GAMEPLAY_TAG_EXTERN(TryRevive);
 			UE_DECLARE_GAMEPLAY_TAG_EXTERN(LevelUp);

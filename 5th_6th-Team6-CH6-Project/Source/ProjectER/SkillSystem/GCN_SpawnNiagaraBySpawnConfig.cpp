@@ -1,10 +1,8 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "SkillSystem/GCN_SpawnNiagaraBySpawnConfig.h"
-#include "SkillSystem/GameplayEffectComponent/BaseGECConfig.h"
-#include "SkillSystem/GameplayEffectComponent/SummonRangeAtBone.h"
-#include "SkillSystem/GameplayEffectComponent/SummonRangeGEC.h"
+#include "SkillSystem/SkillNiagaraSpawnConfig.h"
 #include "SkillSystem/SkillNiagaraSpawnHelper.h"
 
 #include "Engine/Blueprint.h"
@@ -13,85 +11,41 @@
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemLog.h"
 #include "GameplayCueManager.h"
+#include "NiagaraComponent.h"
+#include "NiagaraSystem.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/RootMotionSource.h"
 
 //#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueNotify_Static)
 
 namespace
 {
-	enum class ENiagaraCueSettingType : uint8
+	/**
+	 * SourceObject에서 USkillNiagaraSpawnConfig를 직접 가져옵니다.
+	 * 기존 ResolveSettingsFromConfig를 완전히 대체합니다.
+	 */
+	const USkillNiagaraSpawnConfig* GetSpawnConfigFromParameters(const FGameplayCueParameters& Parameters)
 	{
-		None,
-		Summoner,
-		Range,
-		Hit
-	};
+		return Cast<USkillNiagaraSpawnConfig>(Parameters.SourceObject.Get());
+	}
 
-	ENiagaraCueSettingType ResolveSettingsFromConfig(const UBaseGECConfig* Config, const FGameplayTag& CueTag, FSkillNiagaraSpawnSettings& OutSettings)
+	/** 공통 서버 체크 */
+	bool ShouldSkipOnServer(const AActor* MyTarget)
 	{
-		if (!IsValid(Config) || !CueTag.IsValid())
+		if (!IsValid(MyTarget))
 		{
-			return ENiagaraCueSettingType::None;
+			return true;
 		}
-
-		if (const USummonRangeByWorldOriginGECConfig* const WorldConfig = Cast<USummonRangeByWorldOriginGECConfig>(Config))
-		{
-			if (WorldConfig->SummonerSpawnVfx.CueTag == CueTag)
-			{
-				OutSettings = WorldConfig->SummonerSpawnVfx;
-				return ENiagaraCueSettingType::Summoner;
-			}
-
-			if (WorldConfig->RangeSpawnVfx.CueTag == CueTag)
-			{
-				OutSettings = WorldConfig->RangeSpawnVfx;
-				return ENiagaraCueSettingType::Range;
-			}
-
-			if (WorldConfig->HitTargetVfx.CueTag == CueTag)
-			{
-				OutSettings = WorldConfig->HitTargetVfx;
-				return ENiagaraCueSettingType::Hit;
-			}
-		}
-
-		if (const USummonRangeByBoneGECConfig* const BoneConfig = Cast<USummonRangeByBoneGECConfig>(Config))
-		{
-			if (BoneConfig->SummonerSpawnVfx.CueTag == CueTag)
-			{
-				OutSettings = BoneConfig->SummonerSpawnVfx;
-				return ENiagaraCueSettingType::Summoner;
-			}
-
-			if (BoneConfig->RangeSpawnVfx.CueTag == CueTag)
-			{
-				OutSettings = BoneConfig->RangeSpawnVfx;
-				return ENiagaraCueSettingType::Range;
-			}
-
-			if (BoneConfig->HitTargetVfx.CueTag == CueTag)
-			{
-				OutSettings = BoneConfig->HitTargetVfx;
-				return ENiagaraCueSettingType::Hit;
-			}
-		}
-
-		return ENiagaraCueSettingType::None;
+		const ENetMode NetMode = MyTarget->GetNetMode();
+		return MyTarget->HasAuthority() && NetMode == NM_DedicatedServer;
 	}
 }
 
 bool UGCN_SpawnNiagaraBySpawnConfig::OnExecute_Implementation(AActor* MyTarget, const FGameplayCueParameters& Parameters) const
 {
-	if (!IsValid(MyTarget))
+	if (ShouldSkipOnServer(MyTarget))
 	{
-		//UE_LOG(LogTemp, Error, TEXT("GCN_SpawnNiagara: MyTarget is NULL!"));
-		return false;
-	}
-
-	ENetMode NetMode = (MyTarget) ? MyTarget->GetNetMode() : NM_Standalone;
-	if (MyTarget->HasAuthority() && NetMode == NM_DedicatedServer)
-	{
-		// 데디서버에서는 시각 효과를 스폰하지 않으므로 여기서 리턴되는 것이 정상입니다.
-		//UE_LOG(LogTemp, Log, TEXT("GCN_SpawnNiagara: Skipping Spawn on Dedicated Server."));
 		return false;
 	}
 
@@ -101,36 +55,115 @@ bool UGCN_SpawnNiagaraBySpawnConfig::OnExecute_Implementation(AActor* MyTarget, 
 		return false;
 	}
 
-	const UBaseGECConfig* const Config = Cast<UBaseGECConfig>(Parameters.SourceObject);
-	if (!IsValid(Config))
+	const USkillNiagaraSpawnConfig* const SpawnConfig = GetSpawnConfigFromParameters(Parameters);
+	if (!IsValid(SpawnConfig))
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("GCN_SpawnNiagara: SourceObject is Invalid!"));
 		return false;
 	}
 
-	FSkillNiagaraSpawnSettings SpawnSettings;
-	const ENiagaraCueSettingType SettingType = ResolveSettingsFromConfig(Config, GameplayCueTag, SpawnSettings);
-	if (SettingType == ENiagaraCueSettingType::None)
+	const FSkillNiagaraSpawnSettings SpawnSettings = SpawnConfig->ToSettings();
+	if (SpawnSettings.NiagaraSystem.IsNull())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("GCN_SpawnNiagara: SettingType is None! Tag Mismatch? (GCN Tag: %s)"), *GameplayCueTag.ToString());
 		return false;
 	}
 
 	const AActor* const EffectCauser = Cast<AActor>(Parameters.EffectCauser.Get());
-	const AActor* const SourceActor = IsValid(EffectCauser) ? EffectCauser : MyTarget;
+	const AActor* const Instigator = Cast<AActor>(Parameters.Instigator.Get());
+
+	// CueTag를 기반으로 SourceActor(부착/기준 대상) 결정:
+	// - "Summoner" → 시전자(Instigator) 기준 부착
+	// - "HitTarget" → 피격 대상(MyTarget) 기준 부착
+	// - 그 외(Range 등) → EffectCauser(범위 액터 등) 기준 부착
+	const FString TagStr = Parameters.OriginalTag.ToString();
+	const AActor* SourceActor = nullptr;
+	if (TagStr.Contains(TEXT("Summoner")))
+	{
+		SourceActor = IsValid(Instigator) ? Instigator : MyTarget;
+	}
+	else if (TagStr.Contains(TEXT("HitTarget")))
+	{
+		SourceActor = MyTarget;
+	}
+	else
+	{
+		SourceActor = IsValid(EffectCauser) ? EffectCauser : MyTarget;
+	}
 
 	FTransform SourceTransform = IsValid(SourceActor) ? SourceActor->GetActorTransform() : FTransform::Identity;
 	SourceTransform.SetLocation(Parameters.Location);
 
-	const FVector* OptionalLookAtTarget = nullptr;
-	FVector LookAtTargetLocation = FVector::ZeroVector;
+	SkillNiagaraSpawnHelper::SpawnNiagaraBySettings(World, SpawnSettings, SourceTransform, SourceActor, nullptr, Parameters.TargetAttachComponent.Get());
+	return true;
+}
 
-	if (SettingType == ENiagaraCueSettingType::Hit && IsValid(SourceActor))
+bool UGCN_SpawnNiagaraBySpawnConfig::OnActive_Implementation(AActor* MyTarget, const FGameplayCueParameters& Parameters) const
+{
+	// 1. 시각 효과 스폰
+	OnExecute_Implementation(MyTarget, Parameters);
+
+	// 2. 클라이언트-사이드 이동 동기화 (호스트가 아닌 경우에만 로컬 RootMotionSource 적용)
+	if (IsValid(MyTarget) && !MyTarget->HasAuthority())
 	{
-		LookAtTargetLocation = SourceActor->GetActorLocation();
-		OptionalLookAtTarget = &LookAtTargetLocation;
+		ACharacter* const Character = Cast<ACharacter>(MyTarget);
+		UCharacterMovementComponent* const CMC = IsValid(Character) ? Character->GetCharacterMovement() : nullptr;
+
+		// 방향(Normal)과 속도(RawMagnitude)가 유효한 경우에만 실행
+		if (IsValid(CMC) && !Parameters.Normal.IsNearlyZero() && Parameters.RawMagnitude > 0.0f)
+		{
+			TSharedPtr<FRootMotionSource_ConstantForce> ConstantForce = MakeShared<FRootMotionSource_ConstantForce>();
+			ConstantForce->InstanceName = FName(TEXT("ConstantForceMoveGEC_Client"));
+			ConstantForce->AccumulateMode = ERootMotionAccumulateMode::Override;
+			ConstantForce->Priority = 5;
+			ConstantForce->Force = Parameters.Normal * Parameters.RawMagnitude;
+			ConstantForce->Duration = (Parameters.NormalizedMagnitude > 0.0f) ? Parameters.NormalizedMagnitude : 5.0f;
+			ConstantForce->FinishVelocityParams.Mode = ERootMotionFinishVelocityMode::MaintainLastRootMotionVelocity;
+
+			CMC->ApplyRootMotionSource(ConstantForce);
+		}
 	}
 
-	SkillNiagaraSpawnHelper::SpawnNiagaraBySettings(World, SpawnSettings, SourceTransform, SourceActor, OptionalLookAtTarget);
+	return true;
+}
+
+bool UGCN_SpawnNiagaraBySpawnConfig::OnRemove_Implementation(AActor* MyTarget, const FGameplayCueParameters& Parameters) const
+{
+	if (!IsValid(MyTarget))
+	{
+		return false;
+	}
+
+	const USkillNiagaraSpawnConfig* const SpawnConfig = GetSpawnConfigFromParameters(Parameters);
+	if (!IsValid(SpawnConfig) || SpawnConfig->NiagaraSystem.IsNull())
+	{
+		return false;
+	}
+
+	UNiagaraSystem* const LoadedSystem = SpawnConfig->NiagaraSystem.LoadSynchronous();
+	if (!IsValid(LoadedSystem))
+	{
+		return false;
+	}
+
+	// 캐릭터에서 동일한 NiagaraSystem을 가진 컴포넌트를 찾아 Deactivate
+	TArray<UNiagaraComponent*> NCs;
+	MyTarget->GetComponents<UNiagaraComponent>(NCs);
+	for (UNiagaraComponent* NC : NCs)
+	{
+		if (IsValid(NC) && NC->GetAsset() == LoadedSystem)
+		{
+			NC->Deactivate();
+		}
+	}
+
+	// 2. 클라이언트-사이드 이동 종료
+	if (IsValid(MyTarget) && !MyTarget->HasAuthority())
+	{
+		ACharacter* const Character = Cast<ACharacter>(MyTarget);
+		if (UCharacterMovementComponent* const CMC = IsValid(Character) ? Character->GetCharacterMovement() : nullptr)
+		{
+			CMC->RemoveRootMotionSource(FName(TEXT("ConstantForceMoveGEC_Client")));
+		}
+	}
+
 	return true;
 }

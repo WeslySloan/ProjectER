@@ -35,8 +35,9 @@ void ULootableComponent::BeginPlay()
 void ULootableComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(ULootableComponent, ItemPool);
 	DOREPLIFETIME(ULootableComponent, CurrentItemList);
-	DOREPLIFETIME(ULootableComponent, bDestroyOwnerWhenEmpty); // replicate config flag so clients see it
+	DOREPLIFETIME(ULootableComponent, bDestroyOwnerWhenEmpty);
 }
 
 void ULootableComponent::PickupItem()
@@ -183,40 +184,39 @@ void ULootableComponent::InitializeWithItems(const TArray<UBaseItemData*>& Items
 		return;
 	}
 
+	// 시체/루팅 대상 전용 런타임 풀 재구성
+	ItemPool.Empty();
 	CurrentItemList.Empty();
 	CurrentItemList.SetNum(MaxSlots);
 
-	int32 ItemCount = FMath::Min(Items.Num(), MaxSlots);
+	int32 WriteIndex = 0;
 
-	for (int32 i = 0; i < ItemCount; ++i)
+	for (UBaseItemData* Item : Items)
 	{
-		if (Items[i])
+		if (!Item || WriteIndex >= MaxSlots)
 		{
-			int32 PoolIndex = ItemPool.Find(Items[i]);
-			if (PoolIndex != INDEX_NONE)
-			{
-				CurrentItemList[i].ItemId = PoolIndex;
-				CurrentItemList[i].Count = 1;
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[LootableComponent] InitializeWithItems: Item not found in ItemPool"));
-				CurrentItemList[i].ItemId = -1;
-			}
+			continue;
 		}
+
+		const int32 PoolIndex = ItemPool.Add(Item);
+
+		CurrentItemList[WriteIndex].ItemId = PoolIndex;
+		CurrentItemList[WriteIndex].Count = 1;
+		++WriteIndex;
 	}
 
-	// 나머지는 빈 슬롯
-	for (int32 i = ItemCount; i < MaxSlots; ++i)
+	// 나머지는 빈 슬롯 처리
+	for (int32 i = WriteIndex; i < MaxSlots; ++i)
 	{
 		CurrentItemList[i].ItemId = -1;
 		CurrentItemList[i].Count = 0;
 	}
 
 	OnLootChanged.Broadcast();
+	GetOwner()->ForceNetUpdate();
 
-	UE_LOG(LogTemp, Log, TEXT("[LootableComponent] InitializeWithItems: Created %d items for %s"),
-		ItemCount, *GetOwner()->GetName());
+	UE_LOG(LogTemp, Log, TEXT("[LootableComponent] InitializeWithItems: Created %d items for %s (ItemPool=%d)"),
+		WriteIndex, *GetOwner()->GetName(), ItemPool.Num());
 }
 
 void ULootableComponent::ClearLoot()
@@ -302,7 +302,6 @@ bool ULootableComponent::TakeItem(int32 SlotIndex, APawn* Taker)
 		return false;
 	}
 
-	// 빈 슬롯 체크 (0번 아이템은 유효하므로 < 0일 때만 빈 슬롯)
 	if (CurrentItemList[SlotIndex].ItemId < 0 || CurrentItemList[SlotIndex].Count <= 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[LootableComponent] TakeItem: Empty slot at index %d"), SlotIndex);
@@ -323,19 +322,78 @@ bool ULootableComponent::TakeItem(int32 SlotIndex, APawn* Taker)
 		return false;
 	}
 
-	if (Inventory->AddItem(ItemData))
-	{
-		UE_LOG(LogTemp, Log, TEXT("[LootableComponent] TakeItem: %s took %s"),
-			*Taker->GetName(), *ItemData->ItemName.ToString());
+	const int32 OriginalCount = CurrentItemList[SlotIndex].Count;
+	int32 MovedCount = 0;
 
-		ReduceItem(SlotIndex);
-		return true;
+	// 슬롯에 있던 스택을 가능한 만큼 한 번에 인벤토리로 옮김
+	while (MovedCount < OriginalCount)
+	{
+		if (!Inventory->AddItem(ItemData))
+		{
+			break;
+		}
+
+		++MovedCount;
+	}
+
+	if (MovedCount <= 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[LootableComponent] TakeItem: Failed to add any item to inventory"));
+		return false;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[LootableComponent] TakeItem: %s took %d x %s"),
+		*Taker->GetName(),
+		MovedCount,
+		*ItemData->ItemName.ToString());
+
+	// 한 번에 옮긴 개수만큼 차감
+	if (MovedCount >= OriginalCount)
+	{
+		CurrentItemList[SlotIndex].ItemId = -1;
+		CurrentItemList[SlotIndex].Count = 0;
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[LootableComponent] TakeItem: Failed to add item to inventory (full?)"));
-		return false;
+		CurrentItemList[SlotIndex].Count = OriginalCount - MovedCount;
 	}
+
+	CompactItemList();
+
+	// 전부 소진되었는지 확인
+	if (!HasLootRemaining())
+	{
+		if (bDestroyOwnerWhenEmpty)
+		{
+			OnLootDepleted.Broadcast();
+		}
+
+		if (bDestroyOwnerWhenEmpty && GetOwner()->HasAuthority())
+		{
+			UE_LOG(LogTemp, Log, TEXT("[LootableComponent] Owner %s destroyed because loot emptied."), *GetOwner()->GetName());
+
+			AActor* Owner = GetOwner();
+
+			if (UPrimitiveComponent* RootPrim = Cast<UPrimitiveComponent>(Owner->GetRootComponent()))
+			{
+				RootPrim->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			}
+
+			if (ACharacter* Character = Cast<ACharacter>(Owner))
+			{
+				if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+				{
+					Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+				}
+			}
+
+			Owner->Destroy();
+			return true;
+		}
+	}
+
+	GetOwner()->ForceNetUpdate();
+	return true;
 }
 
 // ========================================
@@ -386,4 +444,57 @@ void ULootableComponent::OnRep_CurrentItemList()
 
 	UE_LOG(LogTemp, Log, TEXT("[LootableComponent] OnRep_CurrentItemList: Loot updated for %s"),
 		*GetOwner()->GetName());
+}
+
+void ULootableComponent::OnRep_ItemPool()
+{
+	if (OnLootChanged.IsBound())
+	{
+		OnLootChanged.Broadcast();
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[LootableComponent] OnRep_ItemPool: ItemPool updated for %s (%d items)"),
+		*GetOwner()->GetName(), ItemPool.Num());
+}
+
+void ULootableComponent::InitializeWithItemStacks(const TArray<UBaseItemData*>& Items, const TArray<int32>& Counts)
+{
+	if (!GetOwner()->HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[LootableComponent] InitializeWithItemStacks: Only call on server!"));
+		return;
+	}
+
+	ItemPool.Empty();
+	CurrentItemList.Empty();
+	CurrentItemList.SetNum(MaxSlots);
+
+	const int32 PairNum = FMath::Min(Items.Num(), Counts.Num());
+	int32 WriteIndex = 0;
+
+	for (int32 i = 0; i < PairNum && WriteIndex < MaxSlots; ++i)
+	{
+		UBaseItemData* Item = Items[i];
+		const int32 Count = Counts[i];
+
+		if (!Item || Count <= 0)
+		{
+			continue;
+		}
+
+		const int32 PoolIndex = ItemPool.Add(Item);
+
+		CurrentItemList[WriteIndex].ItemId = PoolIndex;
+		CurrentItemList[WriteIndex].Count = Count;
+		++WriteIndex;
+	}
+
+	for (int32 i = WriteIndex; i < MaxSlots; ++i)
+	{
+		CurrentItemList[i].ItemId = -1;
+		CurrentItemList[i].Count = 0;
+	}
+
+	OnLootChanged.Broadcast();
+	GetOwner()->ForceNetUpdate();
 }

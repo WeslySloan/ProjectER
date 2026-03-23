@@ -107,6 +107,24 @@ struct FMonsterSoundData
 	TObjectPtr<USoundBase> TestSound;
 };
 
+USTRUCT(BlueprintType)
+struct FMonsterDecalData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
+	TObjectPtr<UMaterialInterface> DecalMeterial;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
+	FVector DecalScale = FVector(0, 0, 0);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
+	FVector PositionOffset = FVector(0, 0, 0);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
+	FRotator RotationOffset = FRotator(0, 0, 0);
+};
+
 
 // 몬스터 데이터
 UCLASS()
@@ -153,6 +171,8 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "MonsterData|Effect")
 	TMap<EMonsterActionType, FMonsterSoundData> Sounds;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "MonsterData|Effect")
+	TMap<EMonsterActionType, FMonsterDecalData> DecalMeterials;
 
 
 	UPROPERTY(EditDefaultsOnly, Category = "MonsterData|Visual")
@@ -174,6 +194,9 @@ public:
 	TSubclassOf<UAnimInstance> Anim;
 
 
+	UPROPERTY(EditDefaultsOnly, Category = "MonsterData|RangeSphere")
+	float RangeSphereRadius = 1000.f;
+
 
 	UPROPERTY(EditDefaultsOnly, Category = "MonsterData|Reward")
 	int Exp;
@@ -182,14 +205,9 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "MonsterData|Reward")
 	int Gold;
 
-	// 이거는 죽었을 때 로드해서 ??
+	// 이거는 죽었을 때 로드해서
 	UPROPERTY(EditDefaultsOnly, Category = "MonsterData|Reward")
 	TArray<UBaseItemData*> ItemList;
 
-	//2D Shape SamplePoints for overlapping //--> this will be used if have chance
-	//TArray<>
-	
-	// Mesh + Material for MID generation
-	/*UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "MonsterData|Reward")
-	TMap<>*/
+
 };

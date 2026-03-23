@@ -1,4 +1,4 @@
-﻿#include "CharacterSystem/GameplayTags/GameplayTags.h"
+#include "CharacterSystem/GameplayTags/GameplayTags.h"
 
 namespace ProjectER
 {
@@ -149,6 +149,7 @@ namespace ProjectER
 		namespace Interact
 		{
 			UE_DEFINE_GAMEPLAY_TAG_COMMENT(OpenBox, "Event.Interact.OpenBox", "");
+			UE_DEFINE_GAMEPLAY_TAG_COMMENT(Teleport, "Event.Interact.Teleport", "Teleport Interaction");
 		}
 	}
 
@@ -198,10 +199,25 @@ namespace ProjectER
 				UE_DEFINE_GAMEPLAY_TAG_COMMENT(R, "GameplayCue.Sound.Skill.R", "R Particle");
 			}
 		}
+		namespace Decal
+		{
+			namespace Skill
+			{
+				UE_DEFINE_GAMEPLAY_TAG_COMMENT(AutoAttack, "GameplayCue.Decal.Skill.AutoAttack", "AutoAttack Decal");
+				UE_DEFINE_GAMEPLAY_TAG_COMMENT(Q, "GameplayCue.Decal.Skill.Q", "Q Decal");
+				UE_DEFINE_GAMEPLAY_TAG_COMMENT(W, "GameplayCue.Decal.Skill.W", "W Decal");
+				UE_DEFINE_GAMEPLAY_TAG_COMMENT(E, "GameplayCue.Decal.Skill.E", "E Decal");
+				UE_DEFINE_GAMEPLAY_TAG_COMMENT(R, "GameplayCue.Decal.Skill.R", "R Decal");
+			}
+		}
 
 		namespace Combat
 		{
 			UE_DEFINE_GAMEPLAY_TAG_COMMENT(Hit, "GameplayCue.Combat.Hit", "Cue for Attack Hit");
+			namespace HitEffect
+			{
+				UE_DEFINE_GAMEPLAY_TAG_COMMENT(Aurora, "GameplayCue.Combat.HitEffect.Aurora", "Cue for Aurora Auto Attack Hit");
+			}
 			UE_DEFINE_GAMEPLAY_TAG_COMMENT(Revive, "GameplayCue.Combat.Revive", "Cue for Revive");
 			UE_DEFINE_GAMEPLAY_TAG_COMMENT(TryRevive, "GameplayCue.Combat.TryRevive", "Cue for Try Revive Ally");
 			UE_DEFINE_GAMEPLAY_TAG_COMMENT(LevelUp, "GameplayCue.Combat.LevelUp", "Cue for Level Up");

@@ -8,6 +8,22 @@
 
 class UBaseItemData;
 
+// enum for looting reaction
+UENUM(BlueprintType)
+enum class ELootReactionType : uint8
+{
+	None =255 UMETA(DisplayName="None"),
+
+	LootSuccess =0 UMETA(DisplayName="LootSuccess"),
+	LootFail =1 UMETA(DisplayName="LootFail"),
+};
+
+
+//Delegate to call bp exposed reaction
+DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnLootableItemClicked, UBaseItemData*, ItemData, bool, bDidSuccess);// loot reaction
+
+//TODO -> need multi player case sync for reaction
+
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class PROJECTER_API ULootableComponent : public UActorComponent
 {
@@ -24,6 +40,13 @@ protected:
 
 
 public:
+
+	//========= Delegate Interaction =======//
+
+	/*UPROPERTY(BlueprintAssignable, Category="Lootable|BPInteraction")
+	FOnLootableItemClicked OnLootableItemClicked;*/
+
+	
 	// ========================================
 	// BaseBoxActor 호환 인터페이스
 	// ========================================
@@ -84,6 +107,7 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Lootable")
 	bool TakeItem(int32 SlotIndex, class APawn* Taker);
+	
 
 	// ========================================
 	// 델리게이트
@@ -109,13 +133,17 @@ protected:
 	UFUNCTION()
 	void OnRep_CurrentItemList();
 
+	UFUNCTION()
+	void OnRep_ItemPool();
+
+
 public:
 	// ========================================
 	// 설정 가능한 프로퍼티
 	// ========================================
 
 	/** 루팅 가능한 아이템 풀 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lootable|Setup")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_ItemPool, Category = "Lootable|Setup")
 	TArray<TObjectPtr<UBaseItemData>> ItemPool;
 
 	/** 최대 슬롯 개수 (기본 10칸) */
@@ -137,6 +165,9 @@ public:
 	/** 루팅 완료 시 오너 액터 자동 삭제 여부 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Replicated, Category = "Lootable|Behavior")
 	bool bDestroyOwnerWhenEmpty = false;
+
+	UFUNCTION(BlueprintCallable, Category = "Lootable")
+	void InitializeWithItemStacks(const TArray<UBaseItemData*>& Items, const TArray<int32>& Counts);
 
 protected:
 	/** 현재 루트 슬롯 리스트 (리플리케이션) */

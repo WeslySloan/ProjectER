@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "ItemSystem/Interface/I_ItemInteractable.h" // [김현수 추가분]
+#include "ItemSystem/Data/ItemRecipeRow.h" // [김현수 추가분]
 
 //Curved World Subsystem added //2026/02/10
 #include "CurvedWorldSubsystem.h"
@@ -26,13 +27,17 @@ class UInputConfig;
 class UInputAction;
 class UDecalComponent;
 class ABaseCharacter;
+class UCharacterData; // [추가] 캐릭터 데이터 포워드 선언
 
 class UTopDownCameraComp; //Camera Added
 
 class UUI_MainHUD; // UI시스템 관리자
+class UUI_Scoreboard;
+
+class ABaseItemActor; // [김현수 추가분]
+class UAudioComponent; // [김현수 추가분]
 
 struct FInputActionValue;
-
 
 //Log
 DECLARE_LOG_CATEGORY_EXTERN(Controller_Camera, Log, All);
@@ -55,6 +60,7 @@ protected:
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void SetupInputComponent() override;
 	virtual void PlayerTick(float DeltaTime) override;
+	virtual void PawnLeavingGame() override;
 	
 	virtual void OnRep_Pawn() override;
 	
@@ -92,6 +98,10 @@ protected:
 	// 미니맵 클릭 이동 _ mpyi
 public:
 	void OnMinimapClicked(FVector _TargetWorldPos);
+
+	UFUNCTION(BlueprintCallable)
+	class ABaseCharacter* GetControlledBaseChar() const { return ControlledBaseChar; }
+
 	
 protected:
 	// 입력 매핑 컨텍스트 (IMC)
@@ -121,6 +131,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
 	TObjectPtr<UTopDownCameraComp> TopDownCameraComp;
 	
+
 private:
 	// 마우스 입력 키다운 플래그
 	uint8 bIsMousePressed : 1;
@@ -160,7 +171,58 @@ protected:
 	// 기존 Move 함수를 확장하여 상호작용 판정 포함
 	void ProcessMouseInteraction();
 
+private:
+	// 조합식 DataTable
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Crafting", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UDataTable> ItemRecipeTable;
+
+	// 현재 조합 중인 레시피
+	FItemRecipeRow* CurrentCraftingRecipe = nullptr;
+
+	// 조합 타이머
+	FTimerHandle CraftingTimerHandle;
+
+	// 조합 사운드 컴포넌트
+	UPROPERTY()
+	TObjectPtr<UAudioComponent> CraftingSoundComponent;
+
+	// 조합 중인지 여부
+	bool bIsCrafting = false;
+
+	// Z키 입력: 조합 시도
+	void TryStartCrafting();
+
+	// 조합 가능한 레시피 찾기 (우선순위 높은 순)
+	FItemRecipeRow* FindBestAvailableRecipe();
+
+	// 조합 시작
+	void StartCrafting(FItemRecipeRow* Recipe);
+
+	// 조합 채널링 완료
+	void CompleteCrafting();
+
+	// 재료가 인벤토리에 있는지 확인
+	bool HasMaterialsInInventory(const FItemRecipeRow* Recipe, int32& OutMat1Index, int32& OutMat2Index);
+
+	// 결과 아이템을 넣을 빈 슬롯 찾기
+	int32 FindFirstEmptySlot();
+
 public:
+	// UI 드래그 취소(월드로 드랍) 시 로컬에서 호출
+	void RequestDropInventoryItemFromUI(int32 SlotIndex, const FVector2D& ScreenSpacePosition);
+
+	UFUNCTION(Server, Reliable)
+	void Server_DropInventoryItem(int32 SlotIndex, FVector_NetQuantize DropLocation);
+
+	UPROPERTY(EditDefaultsOnly, Category = "Item|Drop")
+	TSubclassOf<ABaseItemActor> DroppedItemActorClass;
+
+	// 조합 취소
+	void CancelCrafting();
+
+	// 조합 중 여부
+	UFUNCTION(BlueprintPure, Category = "Crafting")
+	bool IsCrafting() const { return bIsCrafting; }
 /// [김현수 추가분] - 끝
 
 //-----------------------------------------------------------
@@ -238,6 +300,45 @@ public:
 
 	UFUNCTION(BlueprintCallable, Client, Reliable)
 	void Client_CloseLoadingUI();
+
+	// 클라이언트가 캐릭터 선택창 진입 요청
+	UFUNCTION(BlueprintCallable, Server, Reliable)
+	void Server_RequestCharacterSelection();
+
+	// 유저가 준비 버튼을 클릭했을 때 호출 (자신의 레디 상태 토글)
+	UFUNCTION(BlueprintCallable, Server, Reliable, Category = "Lobby")
+	void Server_ToggleReadyState();
+
+	// 유저가 특정 캐릭터 버튼을 클릭했을 때 호출 (서버에 데이터 저장 요청)
+	UFUNCTION(BlueprintCallable, Server, Reliable, Category = "Character Selection")
+	void Server_SelectCharacter(const TSoftObjectPtr<UCharacterData>& SelectedData);
+
+	// 서버가 모든 클라이언트에게 캐릭터 선택 UI를 띄우라고 명령
+	UFUNCTION(BlueprintCallable, Client, Reliable)
+	void Client_ShowCharacterSelectionUI();
+
+	// HUD BP에서 UI를 스왑하기 위해 사용할 이벤트
+	UFUNCTION(BlueprintImplementableEvent, Category = "UI")
+	void OnShowCharacterSelectionUI();
+
+	// [텔레포트 관련]
+	UFUNCTION(BlueprintCallable, Client, Reliable)
+	void Client_OpenTeleportUI(AActor* TeleportActor);
+
+	UFUNCTION(BlueprintCallable, Client, Reliable)
+	void Client_CloseTeleportUI();
+
+	UFUNCTION(BlueprintCallable, Client, Reliable)
+	void Client_OpenRespawnTeleportUI();
+
+	UFUNCTION(BlueprintCallable, Client, Reliable)
+	void Client_CloseRespawnTeleportUI();
+
+	UFUNCTION(BlueprintCallable, Server, Reliable)
+	void Server_RequestTeleport(int32 RegionIndex);
+
+	UFUNCTION(BlueprintCallable, Server, Reliable)
+	void Server_BeginTeleportInteract(class UER_TeleportComponent* TeleportComp);
 	// 박스 아이템 루팅 RPC 끝
 
 	//	mpyi 추가분 _ UI SYSTEM
@@ -256,10 +357,22 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Client, Reliable)
 	void UI_AssistCountUpdate(int32 AssistCount);
+
+	// 인벤토리 업데이트 핸들러
+	UFUNCTION()
+	void OnInventoryUpdated();
 private:
 	UPROPERTY()
 	UUI_MainHUD* MainHUD;
-
+	
+protected:
+	// 현황판 위젯
+	UPROPERTY(EditAnywhere, Category = "UI")
+	TSubclassOf<UUI_Scoreboard> ScoreboardClass;
+	UPROPERTY()
+	UUI_Scoreboard* ScoreboardWidget;
+	void ShowScoreboard();
+	void HideScoreboard();
 	//
 
 private:
@@ -294,6 +407,8 @@ private:
 		bool bTraceComplex,
 		FHitResult& OutHitResult);
 
+
+
 private:
 	// UI 클래스
 	UPROPERTY(EditDefaultsOnly, Category = "UI")
@@ -323,8 +438,22 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category = "UI")
 	TSubclassOf<UUserWidget> LoadingUIClass;
 
+	// Teleport UI
+	UPROPERTY(EditDefaultsOnly, Category = "ProjectER|UI")
+	TSubclassOf<UUserWidget> TeleportUIClass;
+
 	UPROPERTY(Transient)
-	TObjectPtr<UUserWidget> LoadingUIInstance;
+	TObjectPtr<UUserWidget> TeleportUIInstance;
+
+	UPROPERTY(EditDefaultsOnly, Category = "ProjectER|UI")
+	TSubclassOf<UUserWidget> RespawnTeleportUIClass;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UUserWidget> RespawnTeleportUIInstance;
+	
+	// 거리 측정을 위한 타겟 캐싱
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AActor> CurrentTeleportActor;
 
 	// Currently bound loot component for automatic popup close
 	TWeakObjectPtr<class ULootableComponent> BoundLootComponent;
@@ -334,10 +463,6 @@ private:
 
 	// Handler for loot depleted delegate
 	void HandleLootDepleted();
-
-	// 인벤토리 업데이트 핸들러
-	UFUNCTION()
-	void OnInventoryUpdated();
 
 	// Add reference to curved world subsystem
 	UPROPERTY()

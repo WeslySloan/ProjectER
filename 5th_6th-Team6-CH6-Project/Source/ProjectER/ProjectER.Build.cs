@@ -19,7 +19,6 @@ public class ProjectER : ModuleRules
             "UMG",
             "Slate",
             "SlateCore",
-            "CommonUI",
             "GameplayAbilities",
             "GameplayTags",
             "GameplayTasks",
@@ -32,8 +31,15 @@ public class ProjectER : ModuleRules
             "OnlineSubsystemSteam",
             "OnlineSubsystem",
             "OnlineSubsystemUtils",
+            "PhysicsCore",// for physic material
             //"UnrealEd",//for the editor function
+            "Projects",// for plugin module (IPluginManager::Get())
 
+        });
+        
+        PrivateDependencyModuleNames.AddRange(new string[]
+        {
+            "RenderCore",//for shader module to be used
         });
         
         if (Target.bBuildEditor)
@@ -45,7 +51,6 @@ public class ProjectER : ModuleRules
             });
         }
         
-        PrivateDependencyModuleNames.AddRange(new string[] { });
         PublicIncludePaths.AddRange(new string[]
         {
             "ProjectER"

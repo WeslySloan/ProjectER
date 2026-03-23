@@ -1,9 +1,10 @@
-﻿#include "ER_OutGameMode.h"
+#include "ER_OutGameMode.h"
 #include "GameModeBase/State/ER_PlayerState.h"
 #include "GameModeBase/State/ER_GameState.h"
 #include "GameFramework/PlayerState.h"
 #include "Kismet/GameplayStatics.h"
 #include "CharacterSystem/Player/BasePlayerController.h"
+#include "GameModeBase/ER_OutGamePlayerController.h"
 
 AER_OutGameMode::AER_OutGameMode()
 {
@@ -129,16 +130,24 @@ void AER_OutGameMode::PostLogin(APlayerController* NewPlayer)
 
 void AER_OutGameMode::StartGame()
 {
-	if (!HasAuthority())
-		return;
-
     UE_LOG(LogTemp, Log, TEXT("[GM] : StartGame"));
 
     AER_GameState* GS = GetGameState<AER_GameState>();
     if (GS)
     {
         UE_LOG(LogTemp, Log, TEXT("[GM] : StartGame"));
+
+        // 트래블 전 모든 클라이언트에게 로딩 화면을 띄우도록 지시
+        for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+        {
+            if (ABasePlayerController* PC = Cast<ABasePlayerController>(It->Get()))
+            {
+                PC->Client_OpenLoadingUI();
+            }
+        }
+
         int32 PlayerCount = GS->PlayerArray.Num();
+        //FString TravelURL = FString::Printf(TEXT("/Game/Level/BattleMap/BattleMap?PlayerCount=%d"), PlayerCount);
         FString TravelURL = FString::Printf(TEXT("/Game/Level/BasicMap?PlayerCount=%d"), PlayerCount);
 
         GetWorld()->ServerTravel(TravelURL, true);
@@ -151,6 +160,19 @@ void AER_OutGameMode::EndGame()
 		return;
 
 	GetWorld()->ServerTravel("/Game/Level/Level_Lobby", true);
+}
+
+void AER_OutGameMode::ShowCharacterSelectionToAll()
+{
+    UE_LOG(LogTemp, Log, TEXT("[GM] : ShowCharacterSelectionToAll"));
+
+    for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+    {
+        if (ABasePlayerController* PC = Cast<ABasePlayerController>(It->Get()))
+        {
+            PC->Client_ShowCharacterSelectionUI();
+        }
+    }
 }
 
 void AER_OutGameMode::MoveTeam(APlayerController* Player, int32 TeamIdx)

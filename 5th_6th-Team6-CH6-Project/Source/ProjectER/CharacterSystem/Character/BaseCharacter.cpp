@@ -1,9 +1,11 @@
-﻿#include "CharacterSystem/Character/BaseCharacter.h"
+#include "CharacterSystem/Character/BaseCharacter.h"
 #include "CharacterSystem/Player/BasePlayerState.h"
 #include "CharacterSystem/GAS/AttributeSet/BaseAttributeSet.h"
 #include "CharacterSystem/GameplayTags/GameplayTags.h"
 #include "CharacterSystem/Data/CharacterData.h"
 #include "CharacterSystem/Player/BasePlayerController.h"
+#include "ItemSystem/Component/LootableComponent.h" // [김현수 추가분]
+#include "ItemSystem/Component/BaseInventoryComponent.h" // [김현수 추가분] 빈사/사망 전환 시 food 효과 정리용
 
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -704,8 +706,17 @@ void ABaseCharacter::InitAbilitySystem()
 		}
 
 		// 전민성 추가
-		FGameplayAbilitySpec Spec(OpenAbilityClass, 1);
-		ASC->GiveAbility(Spec);
+		if (OpenAbilityClass)
+		{
+			FGameplayAbilitySpec Spec(OpenAbilityClass, 1);
+			ASC->GiveAbility(Spec);
+		}
+		
+		if (TeleportAbilityClass)
+		{
+			FGameplayAbilitySpec Spec(TeleportAbilityClass, 1);
+			ASC->GiveAbility(Spec);
+		}
 		
 		if (AliveStateEffectClass)
 		{
@@ -903,6 +914,18 @@ void ABaseCharacter::Server_StopMove_Implementation()
 
 void ABaseCharacter::MoveToLocation(FVector TargetLocation)
 {
+	if (AbilitySystemComponent.IsValid())
+	{
+		static const FGameplayTag CastingTag = FGameplayTag::RequestGameplayTag(FName("Skill.Animation.Casting"));
+		static const FGameplayTag ActiveTag = FGameplayTag::RequestGameplayTag(FName("Skill.Animation.Active"));
+
+		if (AbilitySystemComponent->HasMatchingGameplayTag(CastingTag) || 
+			AbilitySystemComponent->HasMatchingGameplayTag(ActiveTag))
+		{
+			return; // 아무것도 하지 않고 함수 종료 (이동, 회전 차단)
+		}
+	}
+	
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
 	if (!NavSys) return;
 
@@ -1197,23 +1220,20 @@ void ABaseCharacter::CheckCombatTarget(float DeltaTime)
 	float Tolerance = 20.0f; // 사거리 보정 값 유사 시 사용
 	float CheckRange = HasAuthority() ? (AttackRange + Tolerance) : (AttackRange - Tolerance); // 보정된 사거리
 	
-	// [디버깅용 로그 추가] 현재 거리와 사거리 비교
-#if WITH_EDITOR
-	if (bShowDebug)
-	{
-		static float LogTimer = 0.0f;
-		LogTimer += DeltaTime;
-		if (LogTimer > 0.5f)
-		{
-			LogTimer = 0.0f;
-			/*UE_LOG(LogTemp, Warning, TEXT("[%s] Dist: %.2f / Range: %.2f"), 
-				*GetName(), Distance, GetAttackRange());*/
-		}
-	}
-#endif
-	
 	if (Distance <= AttackRange) // 사거리 내 진입 시
 	{
+		if (AbilitySystemComponent.IsValid())
+		{
+			static const FGameplayTag CastingTag = FGameplayTag::RequestGameplayTag(FName("Skill.Animation.Casting"));
+			static const FGameplayTag ActiveTag = FGameplayTag::RequestGameplayTag(FName("Skill.Animation.Active"));
+			
+			if (AbilitySystemComponent->HasMatchingGameplayTag(CastingTag) || 
+				AbilitySystemComponent->HasMatchingGameplayTag(ActiveTag))
+			{
+				return; 
+			}
+		}
+		
 		// 이동 정지
 		StopPathFollowing();
 		GetCharacterMovement()->StopMovementImmediately();
@@ -1394,6 +1414,12 @@ void ABaseCharacter::HandleDeath()
 {
 	if (HasAuthority())
 	{
+		// [김현수 추가분] 사망 진입 시 진행 중인 food 회복 효과와 대기 큐를 즉시 제거
+		if (UBaseInventoryComponent* InvComp = FindComponentByClass<UBaseInventoryComponent>())
+		{
+			InvComp->ClearFoodHealEffects();
+		}
+
 		if (AbilitySystemComponent.IsValid()) // 중복 사망 방지
 		{
 			FGameplayTag DeathTag = ProjectER::State::Life::Death;
@@ -1419,6 +1445,30 @@ void ABaseCharacter::HandleDeath()
 
 		
 		SetTarget(nullptr);
+		
+		// [김현수 추가분]
+		// LootableComponent 초기화: 플레이어의 인벤토리 아이템을 루팅 가능하게 설정
+		if (ULootableComponent* LootComp = FindComponentByClass<ULootableComponent>())
+		{
+			TArray<UBaseItemData*> LootItems;
+			TArray<int32> LootCounts;
+
+			// 플레이어의 인벤토리에서 아이템 추출
+			if (UBaseInventoryComponent* InvComp = FindComponentByClass<UBaseInventoryComponent>())
+			{
+				for (int32 i = 0; i < InvComp->MaxSlots; ++i)
+				{
+					if (UBaseItemData* Item = InvComp->GetItemAt(i))
+					{
+						LootItems.Add(Item);
+						LootCounts.Add(InvComp->GetStackCountAt(i));
+					}
+				}
+			}
+
+			// LootableComponent에 아이템 초기화
+			LootComp->InitializeWithItemStacks(LootItems, LootCounts);
+		}
 		
 		OnDeath.Broadcast();
 		
@@ -1515,6 +1565,12 @@ void ABaseCharacter::HandleDown()
 {
 	if (HasAuthority())
 	{
+		// [김현수 추가분] 빈사 진입 시 진행 중인 food 회복 효과와 대기 큐를 즉시 제거
+		if (UBaseInventoryComponent* InvComp = FindComponentByClass<UBaseInventoryComponent>())
+		{
+			InvComp->ClearFoodHealEffects();
+		}
+
 		if (AbilitySystemComponent.IsValid())
 		{
 			// 기존 진행 중인 모든 어빌리티 취소 (공격, 캐스팅 등)
@@ -1561,6 +1617,13 @@ void ABaseCharacter::Multicast_Revive_Implementation(FVector RespawnLocation)
 		GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	}
 
+	// [김현수 추가분]
+	// 메시 콜리전 복구
+	if (GetMesh())
+	{
+		GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	}
+
 	// 이동 컴포넌트 복구
 	if (GetCharacterMovement())
 	{
@@ -1569,6 +1632,13 @@ void ABaseCharacter::Multicast_Revive_Implementation(FVector RespawnLocation)
 		// HandleDeath에서 DisableMovement()를 했으므로 다시 활성화 필요할 수 있음
 		// 보통 SetMovementMode(Walking)으로 해결되지만, 안 된다면 아래 코드 추가
 		// GetCharacterMovement()->Activate(); 
+	}
+	
+	// [김현수 추가분]
+	// LootableComponent 초기화 (부활 후 루팅 불가능하도록)
+	if (ULootableComponent* LootComp = FindComponentByClass<ULootableComponent>())
+	{
+		LootComp->InitializeWithItems(TArray<UBaseItemData*>());
 	}
 	
 	SetActorTickEnabled(true);
@@ -1586,10 +1656,21 @@ void ABaseCharacter::Multicast_Death_Implementation()
 		PlayAnimMontage(DeathMontage);
 	}
 
-	// Capsule 비활성화 
+	// Capsule 비활성화
 	if (GetCapsuleComponent())
 	{
 		GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+
+	// [김현수 추가분]
+	// 메시 콜리전을 QueryOnly로 설정 (우클릭/raycast감지 가능, 플레이어 통과 가능)
+	if (GetMesh())
+	{
+		GetMesh()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		GetMesh()->SetCollisionObjectType(ECC_Pawn);
+		GetMesh()->SetCollisionResponseToAllChannels(ECR_Ignore);
+		GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+		GetMesh()->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);  // 플레이어 통과 가능
 	}
 
 	// 이동 정지 및 기능 비활성화
@@ -1655,6 +1736,7 @@ void ABaseCharacter::InitUI()
 			HUD->InitHeroDataFactory(HeroData);
 			HUD->InitASCFactory(GetAbilitySystemComponent());
 			PC->setMainHud(HUD->getMainHUD());
+			PC->OnInventoryUpdated();
 			
 			// 얼굴 아이콘 설정
 			HUD->getMainHUD()->SetMyFaceIcon(HeroData->CharacterIcon);
@@ -1816,6 +1898,15 @@ void ABaseCharacter::UpdateOverheadUI()
 		{
 			HPBarWidgetInstance->Update_HeadIcon(HeroData->CharacterIcon);
 		}
+		
+		AER_PlayerState* TargetPS = GetPlayerState<AER_PlayerState>();
+		if (IsValid(TargetPS))
+		{
+			FText PlayerName = FText::FromString(TargetPS->GetPlayerName());
+			HPBarWidgetInstance->Update_PlayerName(PlayerName);
+		}
+		
+
 		
 	}
 }

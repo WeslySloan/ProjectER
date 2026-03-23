@@ -18,6 +18,12 @@ class UImage;
 class UUI_ToolTip;
 class UCharacterData;
 class UAbilitySystemComponent;
+class USkillDataAsset;
+
+// [김현수 추가분]
+class UUniformGridPanel;
+class UBaseInventoryComponent;
+class UW_InventorySlot;
 
 
 UENUM(BlueprintType)
@@ -63,7 +69,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "UI_MainHUD")
 	void setStat(ECharacterStat stat, int32 Value);
-	
+
+	UFUNCTION()
+	void UpdateSkillPoint(float _nowSP);
 	UFUNCTION()
 	void InitMinimapCompo(USceneCaptureComponent2D* SceneCapture2D);
 	UFUNCTION()
@@ -81,6 +89,17 @@ public:
 	// [김현수 추가분] 인벤토리 UI 업데이트 (아이템 시스템용)
 	UFUNCTION(BlueprintCallable, Category = "Inventory")
 	void UpdateInventoryUI();
+
+	UUI_MainHUD(const FObjectInitializer& ObjectInitializer);
+
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Tags")
+	FGameplayTag Q_SkillTag;
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Tags")
+	FGameplayTag W_SkillTag;
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Tags")
+	FGameplayTag E_SkillTag;
+	UPROPERTY(EditDefaultsOnly, Category = "UI|Tags")
+	FGameplayTag R_SkillTag;
 
 protected:
 	// 마우스 우클릭 확인용
@@ -104,18 +123,40 @@ protected:
 	UFUNCTION() void OnSkill02Hovered();
 	UFUNCTION() void OnSkill03Hovered();
 	UFUNCTION() void OnSkill04Hovered();
+
+	UFUNCTION() void OnSkillLevelUp01Hovered();
+	UFUNCTION() void OnSkillLevelUp02Hovered();
+	UFUNCTION() void OnSkillLevelUp03Hovered();
+	UFUNCTION() void OnSkillLevelUp04Hovered();
 	// .............
 
 	// void ShowTooltip(UWidget* AnchorWidget, UTexture2D* Icon, FText Name, FText ShortDesc, FText DetailDesc, bool showUpper);
 	void ShowTooltip(UWidget* AnchorWidget, UTexture2D* Icon, FText Name, FText ShortDesc, FText DetailDesc, FText CostDesc, bool showUpper);
 	UFUNCTION()
 	void HideTooltip();
+	void initSkillDataAssets(); // 스킬 데이터 애셋 초기화 (툴팁용)
+
+private:
+	// 툴팁용 스킬 데이터 애셋 저장해 둘 곳(매번 for문 돌리면 손해라서 램을 좀 더 쓰기로 함)
+	TArray<USkillDataAsset*> SkillDataAssets;
 
 private:
 	void HandleMinimapClicked(const FPointerEvent& InMouseEvent);
 	class USceneCaptureComponent2D* MinimapCaptureComponent;
 	class UCharacterData* HeroData;
 	class UAbilitySystemComponent* ASC;
+
+	void EnsureInventorySlotWidgets();
+	UBaseInventoryComponent* ResolveInventoryComponent() const;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UW_InventorySlot>> InventorySlotWidgets;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Inventory")
+	int32 InventoryColumnCount = 4;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Inventory")
+	int32 DefaultInventorySlotCount = 8;
 
 protected:
 	UPROPERTY(meta = (BindWidget))
@@ -265,6 +306,9 @@ protected:
 	UPROPERTY(meta = (BindWidget))
 	UTextBlock* NowRespawnTime;
 
+	UPROPERTY(meta = (BindWidget))
+	UImage* UI_BACKGROUND_LevelUp;
+
 	UFUNCTION()
 	void OnSkillClicked_Q();
 	UFUNCTION()
@@ -286,6 +330,23 @@ protected:
 	UFUNCTION()
 	void SkillFireReleased(ESkillKey index);
 
+	UFUNCTION()
+	void OnSkillLevelUpClicked_Q();
+	UFUNCTION()
+	void OnSkillLevelUpReleased_Q();
+
+	UFUNCTION()
+	void OnSkillLevelUpClicked_W();
+	UFUNCTION()
+	void OnSkillLevelUpReleased_W();
+	UFUNCTION()
+	void OnSkillLevelUpClicked_E();
+	UFUNCTION()
+	void OnSkillLevelUpReleased_E();
+	UFUNCTION()
+	void OnSkillLevelUpClicked_R();
+	UFUNCTION()
+	void OnSkillLevelUpReleased_R();
 	UFUNCTION()
 	void OnAbilityActivated(class UGameplayAbility* ActivatedAbility);
 
@@ -371,4 +432,12 @@ protected:
 
 	float debugHP_01 = 1000.f;
 	float debugHP_02 = 1000.f;
+
+private:
+	void RefreshInventoryGridLayout(); // [김현수 추가분]
+
+
+	bool test = true;
+	float getSkillLevel(FGameplayTag SkillTag, bool levelUp);
 };
+
