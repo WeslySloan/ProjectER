@@ -3,9 +3,10 @@
 
 #include "SkillSystem/GameplayEffectComponent/LaunchHomingMissile.h"
 #include "SkillSystem/Actor/BaseMissileActor/BaseMissileActor.h"
-#include "SkillSystem/GameplyeEffect/SkillEffectDataAsset.h"
+#include "SkillSystem/GameplayEffect/SkillEffectDataAsset.h"
 #include "SkillSystem/GameAbility/SkillBase.h"
 #include "SkillSystem/SkillNiagaraSpawnConfig.h"
+#include "SkillSystem/SkillSoundSpawnConfig.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
@@ -92,9 +93,23 @@ void ULaunchHomingMissile::OnGameplayEffectApplied(
 	}
 
 	// --- 타겟 및 스폰 위치 계산 ---
-	AActor* const TargetActor = ContextHandle.GetHitResult()->GetActor();
-	if (!IsValid(TargetActor)) return;
-	//AActor* const TargetActor = GetTargetActorFromContainer(ContextHandle);
+	// 1순위: HitResult에서 타겟 추출
+	AActor* TargetActor = nullptr;
+	if (const FHitResult* HitResult = ContextHandle.GetHitResult())
+	{
+		TargetActor = HitResult->GetActor();
+	}
+	// 2순위: HitResult가 없거나 Actor가 없으면 GE가 적용된 대상(Owner)을 타겟으로 사용
+	if (!IsValid(TargetActor))
+	{
+		TargetActor = GetTargetActorFromContainer(ActiveGEContainer);
+	}
+
+	if (!IsValid(TargetActor))
+	{
+		return;
+	}
+
 	const FTransform SpawnTransform = CalculateSpawnTransform(MissileConfig, Instigator, TargetActor);
 
 	// --- 미사일 액터 지연 생성 ---
@@ -110,7 +125,7 @@ void ULaunchHomingMissile::OnGameplayEffectApplied(
 		return;
 	}
 
-	// --- 효과 Spec 생성 ---
+	// --- 효과 Spec 생성 --- 
 	UAbilitySystemComponent* const CauserASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Instigator);
 	USkillBase* const Skill = const_cast<USkillBase*>(Cast<USkillBase>(ContextHandle.GetAbility()));
 
@@ -124,39 +139,59 @@ void ULaunchHomingMissile::OnGameplayEffectApplied(
 				EffectSpecs.Append(EffectData->MakeSpecs(CauserASC, Skill, MissileActor, ContextHandle));
 			}
 		}
-	}
 
-	// --- 적중 VFX 큐 파라미터 구성 ---
-	FGameplayCueParameters HitCueParams(GESpec);
+		// 강화 효과(SkillProc) 확인 및 전이
+		UBaseGEC::GetSkillProcEffects(CauserASC, Skill, MissileActor, ContextHandle, EffectSpecs);
+	}
+	
+	// --- 적중 효과(VFX, Sound) 큐 파라미터 구성 ---
+	FGameplayCueParameters HitVfxCueParams(GESpec);
 	if (IsValid(MissileConfig->ImpactVfx) && MissileConfig->ImpactVfx->CueTag.IsValid())
 	{
-		HitCueParams.OriginalTag = MissileConfig->ImpactVfx->CueTag;
-		HitCueParams.Instigator = ContextHandle.GetInstigator();
-		HitCueParams.EffectCauser = MissileActor;
-		HitCueParams.Location = SpawnTransform.GetLocation();
-		HitCueParams.SourceObject = MissileConfig->ImpactVfx;
-		HitCueParams.GameplayEffectLevel = GESpec.GetLevel();
+		HitVfxCueParams.OriginalTag = MissileConfig->ImpactVfx->CueTag;
+		HitVfxCueParams.Instigator = ContextHandle.GetInstigator();
+		HitVfxCueParams.EffectCauser = MissileActor;
+		HitVfxCueParams.Location = SpawnTransform.GetLocation();
+		HitVfxCueParams.SourceObject = MissileConfig->ImpactVfx;
+		HitVfxCueParams.GameplayEffectLevel = GESpec.GetLevel();
+	}
+
+	FGameplayCueParameters HitSoundCueParams(GESpec);
+	if (IsValid(MissileConfig->ImpactSound) && MissileConfig->ImpactSound->CueTag.IsValid())
+	{
+		HitSoundCueParams.OriginalTag = MissileConfig->ImpactSound->CueTag;
+		HitSoundCueParams.Instigator = ContextHandle.GetInstigator();
+		HitSoundCueParams.EffectCauser = MissileActor;
+		HitSoundCueParams.Location = SpawnTransform.GetLocation();
+		HitSoundCueParams.SourceObject = MissileConfig->ImpactSound;
+		HitSoundCueParams.GameplayEffectLevel = GESpec.GetLevel();
 	}
 
 	// --- 미사일 초기화 ---
+	// SpawnTransform의 방향을 직접 추출 (FinishSpawning 이전이므로 GetActorForwardVector() 불신뢰)
+	const FVector InitialDirection = SpawnTransform.GetRotation().GetForwardVector();
+
 	MissileActor->InitializeMissile(
 		EffectSpecs,
 		Instigator,
 		TargetActor,
-		HitCueParams,
+		HitVfxCueParams,
+		HitSoundCueParams,
 		MissileConfig->InitialSpeed,
 		MissileConfig->MaxSpeed,
 		MissileConfig->HomingAccelerationMagnitude,
 		MissileConfig->ReachThreshold,
-		MissileConfig->bDestroyOnHit
+		MissileConfig->bDestroyOnHit,
+		InitialDirection
 	);
 	MissileActor->SetLifeSpan(MissileConfig->LifeSpan);
 
 	// --- 스폰 완료 ---
 	MissileActor->FinishSpawning(SpawnTransform);
 
-	// --- Summoner / Missile VFX 실행 ---
+	// --- Summoner / Missile VFX & Sound 실행 ---
 	ExecuteVfx(GESpec, ContextHandle, Instigator, MissileActor, MissileConfig);
+	ExecuteSound(GESpec, ContextHandle, Instigator, MissileActor, MissileConfig);
 }
 
 FTransform ULaunchHomingMissile::CalculateSpawnTransform(
@@ -189,7 +224,12 @@ FTransform ULaunchHomingMissile::CalculateSpawnTransform(
 	// 2. 타겟을 향한 방향 계산
 	if (IsValid(TargetActor))
 	{
-		FVector Dir = TargetActor->GetActorLocation() - SpawnLocation;
+		// 타겟의 중심이나 원격 위치 대신, 실제 유도 지점인 RootComponent의 위치를 정확히 조준합니다.
+		const FVector TargetLocation = TargetActor->GetRootComponent()
+			? TargetActor->GetRootComponent()->GetComponentLocation()
+			: TargetActor->GetActorLocation();
+
+		FVector Dir = TargetLocation - SpawnLocation;
 		if (!Dir.IsNearlyZero())
 		{
 			SpawnRotation = Dir.Rotation();
@@ -249,6 +289,55 @@ void ULaunchHomingMissile::ExecuteVfx(
 				MissileParams.TargetAttachComponent = MissileActor->GetRootComponent();
 			}
 			InstigatorASC->ExecuteGameplayCue(Config->MissileVfx->CueTag, MissileParams);
+		}
+	}
+}
+
+void ULaunchHomingMissile::ExecuteSound(
+	const FGameplayEffectSpec& GESpec,
+	const FGameplayEffectContextHandle& ContextHandle,
+	AActor* Instigator,
+	ABaseMissileActor* MissileActor,
+	const ULaunchHomingMissileConfig* Config) const
+{
+	UAbilitySystemComponent* const InstigatorASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Instigator);
+	if (!IsValid(InstigatorASC) || !IsValid(Config))
+	{
+		return;
+	}
+
+	{
+		FScopedPredictionWindow ForcedWindow(InstigatorASC, FPredictionKey(), false);
+
+		// Summoner Sound
+		if (IsValid(Config->SummonerSound) && Config->SummonerSound->CueTag.IsValid())
+		{
+			FGameplayCueParameters SummonerParams(GESpec);
+			SummonerParams.OriginalTag = Config->SummonerSound->CueTag;
+			SummonerParams.Instigator = ContextHandle.GetInstigator();
+			SummonerParams.EffectCauser = MissileActor;
+			SummonerParams.Location = Instigator->GetActorLocation();
+			SummonerParams.SourceObject = Config->SummonerSound;
+			SummonerParams.GameplayEffectLevel = GESpec.GetLevel();
+			InstigatorASC->ExecuteGameplayCue(Config->SummonerSound->CueTag, SummonerParams);
+		}
+
+		// Missile Sound
+		if (IsValid(Config->MissileSound) && Config->MissileSound->CueTag.IsValid())
+		{
+			FGameplayCueParameters MissileParams(GESpec);
+			MissileParams.OriginalTag = Config->MissileSound->CueTag;
+			MissileParams.Instigator = ContextHandle.GetInstigator();
+			MissileParams.EffectCauser = MissileActor;
+			MissileParams.Location = MissileActor->GetActorLocation();
+			MissileParams.Normal = MissileActor->GetActorForwardVector();
+			MissileParams.SourceObject = Config->MissileSound;
+			MissileParams.GameplayEffectLevel = GESpec.GetLevel();
+			if (IsValid(MissileActor))
+			{
+				MissileParams.TargetAttachComponent = MissileActor->GetRootComponent();
+			}
+			InstigatorASC->ExecuteGameplayCue(Config->MissileSound->CueTag, MissileParams);
 		}
 	}
 }

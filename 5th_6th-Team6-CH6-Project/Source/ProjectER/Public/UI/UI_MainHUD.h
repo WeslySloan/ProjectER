@@ -1,4 +1,4 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
 
@@ -65,7 +65,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UI_MainHUD")
 	void UPdate_MP(float CurrentHP, float MaxHP);
 	UFUNCTION(BlueprintCallable, Category = "UI_MainHUD")
-	void ShowSkillUp(bool show);
+	void ShowSkillUp(bool show, bool isUlt = false);
 
 	UFUNCTION(BlueprintCallable, Category = "UI_MainHUD")
 	void setStat(ECharacterStat stat, int32 Value);
@@ -104,6 +104,7 @@ public:
 protected:
 	// 마우스 우클릭 확인용
 	virtual void NativeConstruct() override; // 생성자
+	virtual void NativeDestruct() override;
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
 
 	// 툴팁 클래스 (에디터에서 할당)
@@ -128,10 +129,11 @@ protected:
 	UFUNCTION() void OnSkillLevelUp02Hovered();
 	UFUNCTION() void OnSkillLevelUp03Hovered();
 	UFUNCTION() void OnSkillLevelUp04Hovered();
+
 	// .............
 
 	// void ShowTooltip(UWidget* AnchorWidget, UTexture2D* Icon, FText Name, FText ShortDesc, FText DetailDesc, bool showUpper);
-	void ShowTooltip(UWidget* AnchorWidget, UTexture2D* Icon, FText Name, FText ShortDesc, FText DetailDesc, FText CostDesc, bool showUpper);
+	void ShowTooltip(UWidget* AnchorWidget, FText Name, FText ShortDesc, FText DetailDesc, FText CostDesc, bool showUpper);
 	UFUNCTION()
 	void HideTooltip();
 	void initSkillDataAssets(); // 스킬 데이터 애셋 초기화 (툴팁용)
@@ -309,6 +311,18 @@ protected:
 	UPROPERTY(meta = (BindWidget))
 	UImage* UI_BACKGROUND_LevelUp;
 
+	UPROPERTY(meta = (BindWidget))
+	UImage* UI_BACKGROUND_LevelUp_Ult;
+
+	UPROPERTY(meta = (BindWidget))
+	UImage* WarningSkull;
+
+	UPROPERTY(meta = (BindWidget))
+	UImage* WarningNumber_ten;
+
+	UPROPERTY(meta = (BindWidget))
+	UImage* WarningNumber_one;
+
 	UFUNCTION()
 	void OnSkillClicked_Q();
 	UFUNCTION()
@@ -329,6 +343,7 @@ protected:
 	void SkillFirePressed(ESkillKey index);
 	UFUNCTION()
 	void SkillFireReleased(ESkillKey index);
+
 
 	UFUNCTION()
 	void OnSkillLevelUpClicked_Q();
@@ -353,6 +368,10 @@ protected:
 	UFUNCTION()
 	void OnActivateSkillCoolTime(ESkillKey Skill_Index);
 
+	void ProcessCooldown(int32 SkillIndex, float Duration, float RemainingTime);
+
+	void OnCooldownTagChanged(const FGameplayTag Tag, int32 NewCount, int32 SkillIndex);
+
 	// cool down 관리
 protected:
 	FTimerHandle SkillTimerHandles[4];
@@ -360,6 +379,8 @@ protected:
 	UPROPERTY()
 	UTextBlock* SkillCoolTexts[4];
 	void UpdateSkillCoolDown(int32 SkillIndex);
+
+	void UpdateSkillIcon();
 
 private:
 	float nowSkillCoolReduc = 0.f;
@@ -410,6 +431,10 @@ private:
 	FTimerHandle KillTimerHandle;
 	void AddKillPerSecond();
 	int32 CurrentKillCount = 0;
+	
+public:
+	UFUNCTION()
+	void WarningSign(int number);
 
 	// TEAM HUD Management
 public:
@@ -427,17 +452,23 @@ protected:
 	UPROPERTY(Transient, BlueprintReadOnly)
 	UWidgetAnimation* HeadHitAnim_02;
 
+	UPROPERTY(Transient, BlueprintReadOnly)
+	UWidgetAnimation* RestrictedSign_01;
+
 	float LastHP_01;
 	float LastHP_02;
 
 	float debugHP_01 = 1000.f;
 	float debugHP_02 = 1000.f;
 
+	int32 nowLevel = 1;
+
 private:
 	void RefreshInventoryGridLayout(); // [김현수 추가분]
 
 
 	bool test = true;
-	float getSkillLevel(FGameplayTag SkillTag, bool levelUp);
+	int32 getSkillLevel(FGameplayTag SkillTag, bool levelUp);
+	bool GetCooldownRemainingForTag(const FGameplayTagContainer& CooldownTags, float& TimeRemaining, float& CooldownDuration);
 };
 

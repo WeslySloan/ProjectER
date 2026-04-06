@@ -9,8 +9,9 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "SkillSystem/GameAbility/SkillBase.h"
-#include "SkillSystem/GameplyeEffect/SkillEffectDataAsset.h"
+#include "SkillSystem/GameplayEffect/SkillEffectDataAsset.h"
 #include "SkillSystem/SkillNiagaraSpawnConfig.h"
+#include "SkillSystem/SkillSoundSpawnConfig.h"
 
 UMoveBaseGEC::UMoveBaseGEC()
 {
@@ -50,11 +51,14 @@ void UMoveBaseGEC::OnGameplayEffectApplied(FActiveGameplayEffectsContainer& Acti
 	const FVector StartLoc = Instigator->GetActorLocation();
 	const FVector Direction = CalculateMoveDirection(GESpec, Instigator, Config);
 
-	const float Duration = CalculateMoveDuration(Instigator, Direction, Config);
+	const float Duration = CalculateMoveDuration(GESpec, Instigator, Direction, Config);
 	// 시작 큐 실행
 	ExecuteMoveCue(Config->StartVfx, GESpec, Instigator, StartLoc);
+	ExecuteMoveSound(Config->StartSound, GESpec, Instigator, StartLoc);
+
 	// Moving 루핑 큐 (방향, 속도, 지속시간을 전달하여 클라이언트 동기화 지원)
 	AddMovingCue(Config->MovingVfx, GESpec, Instigator, Direction, Config->MoveDistance / Duration, Duration);
+	AddMovingSoundCue(Config->MovingSound, GESpec, Instigator, Direction, Config->MoveDistance / Duration, Duration);
 
 	// 파생 클래스가 실제 이동 방식 구현 (EndVfx는 파생 클래스 종료 시점에 직접 실행)
 	Execute(Instigator, Direction, Config, GESpec);
@@ -135,6 +139,61 @@ FVector UMoveBaseGEC::CalculateMoveDirection(const FGameplayEffectSpec& GESpec, 
 	}
 
 	return Instigator->GetActorForwardVector();
+}
+
+FVector UMoveBaseGEC::CalculateTargetLocation(const FGameplayEffectSpec& GESpec, const AActor* Instigator, const UMoveBaseConfig* Config) const
+{
+	if (!IsValid(Instigator) || !IsValid(Config))
+	{
+		return IsValid(Instigator) ? Instigator->GetActorLocation() : FVector::ZeroVector;
+	}
+
+	const FVector StartLoc = Instigator->GetActorLocation();
+	const FVector Direction = CalculateMoveDirection(GESpec, Instigator, Config);
+	const FVector DefaultTarget = StartLoc + Direction * Config->MoveDistance;
+
+	// 컨텍스트 위치 우선 사용 옵션이 켜져 있고, TowardContext/TowardTarget 방식일 때 체크
+	if (Config->bPreferContextLocation &&
+		(Config->DirectionSource == EMoveDirectionSource::TowardContext || Config->DirectionSource == EMoveDirectionSource::TowardTarget))
+	{
+		const FGameplayEffectContextHandle& Context = GESpec.GetEffectContext();
+		FVector ContextLoc = FVector::ZeroVector;
+		bool bHasValidContextLoc = false;
+
+		if (Config->DirectionSource == EMoveDirectionSource::TowardContext && Context.HasOrigin())
+		{
+			ContextLoc = Context.GetOrigin();
+			bHasValidContextLoc = true;
+		}
+		else if (Config->DirectionSource == EMoveDirectionSource::TowardTarget)
+		{
+			if (const FHitResult* Hit = Context.GetHitResult())
+			{
+				if (!Hit->Location.IsZero())
+				{
+					ContextLoc = Hit->Location;
+					bHasValidContextLoc = true;
+				}
+				else if (Hit->GetActor())
+				{
+					ContextLoc = Hit->GetActor()->GetActorLocation();
+					bHasValidContextLoc = true;
+				}
+			}
+		}
+
+		if (bHasValidContextLoc)
+		{
+			// 컨텍스트 위치가 사거리(MoveDistance) 이내라면 해당 위치 사용
+			const float DistSq = FVector::DistSquared(StartLoc, ContextLoc);
+			if (DistSq <= FMath::Square(Config->MoveDistance))
+			{
+				return ContextLoc;
+			}
+		}
+	}
+
+	return DefaultTarget;
 }
 
 void UMoveBaseGEC::HandleWallHit(AActor* Instigator, const FHitResult& Hit, const UMoveBaseConfig* Config, const FGameplayEffectSpec& GESpec) const
@@ -270,6 +329,83 @@ void UMoveBaseGEC::RemoveMovingCue(const USkillNiagaraSpawnConfig* VfxConfig, AA
 	{
 		FScopedPredictionWindow ForcedWindow(InstigatorASC, FPredictionKey(), false);
 		InstigatorASC->RemoveGameplayCue(VfxConfig->CueTag);
+	}
+}
+
+void UMoveBaseGEC::ExecuteMoveSound(const USkillSoundSpawnConfig* SoundConfig, const FGameplayEffectSpec& GESpec, AActor* Instigator, const FVector& Location) const
+{
+	if (!IsValid(SoundConfig) || !SoundConfig->CueTag.IsValid() || !IsValid(Instigator))
+	{
+		return;
+	}
+
+	UAbilitySystemComponent* const InstigatorASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Instigator);
+	if (!IsValid(InstigatorASC))
+	{
+		return;
+	}
+
+	const FGameplayEffectContextHandle& ContextHandle = GESpec.GetEffectContext();
+
+	FGameplayCueParameters Params(GESpec);
+	Params.OriginalTag = SoundConfig->CueTag;
+	Params.Instigator = ContextHandle.GetInstigator();
+	Params.EffectCauser = Instigator;
+	Params.Location = Location;
+	Params.SourceObject = SoundConfig;
+
+	{
+		FScopedPredictionWindow ForcedWindow(InstigatorASC, FPredictionKey(), false);
+		InstigatorASC->ExecuteGameplayCue(SoundConfig->CueTag, Params);
+	}
+}
+
+void UMoveBaseGEC::AddMovingSoundCue(const USkillSoundSpawnConfig* SoundConfig, const FGameplayEffectSpec& GESpec, AActor* Instigator, const FVector& Direction, float Speed, float Duration) const
+{
+	if (!IsValid(SoundConfig) || !SoundConfig->CueTag.IsValid() || !IsValid(Instigator))
+	{
+		return;
+	}
+
+	UAbilitySystemComponent* const InstigatorASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Instigator);
+	if (!IsValid(InstigatorASC))
+	{
+		return;
+	}
+
+	const FGameplayEffectContextHandle& ContextHandle = GESpec.GetEffectContext();
+	FGameplayCueParameters Params(GESpec);
+	Params.OriginalTag = SoundConfig->CueTag;
+	Params.Instigator = ContextHandle.GetInstigator();
+	Params.EffectCauser = Instigator;
+	Params.Location = Instigator->GetActorLocation();
+	Params.Normal = Direction;
+	Params.RawMagnitude = Speed;
+	Params.NormalizedMagnitude = Duration;
+	Params.SourceObject = SoundConfig;
+
+	{
+		FScopedPredictionWindow ForcedWindow(InstigatorASC, FPredictionKey(), false);
+		InstigatorASC->AddGameplayCue(SoundConfig->CueTag, Params);
+	}
+}
+
+void UMoveBaseGEC::RemoveMovingSoundCue(const USkillSoundSpawnConfig* SoundConfig, AActor* Instigator) const
+{
+	if (!IsValid(SoundConfig) || !SoundConfig->CueTag.IsValid() || !IsValid(Instigator))
+	{
+		return;
+	}
+
+	UAbilitySystemComponent* const InstigatorASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Instigator);
+	if (!IsValid(InstigatorASC))
+	{
+		return;
+	}
+
+	{
+		FScopedPredictionWindow ForcedWindow(InstigatorASC, FPredictionKey(), false);
+		InstigatorASC->RemoveGameplayCue(SoundConfig->CueTag);
 	}
 }
 

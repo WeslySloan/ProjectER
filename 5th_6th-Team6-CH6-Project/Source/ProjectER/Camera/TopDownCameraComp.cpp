@@ -77,17 +77,9 @@ void UTopDownCameraComp::TickComponent(float DeltaTime, ELevelTick TickType,
 
 	PendingKeyInput = FVector2D::ZeroVector;
 
-	UpdateCameraTransform();
-
-	if (MainVisionRTManager)//draw vision
-	{
-		MainVisionRTManager->UpdateCameraLOS();
-	}
-
-	if (OcclusionPainter)// draw occlusion
-	{
-		OcclusionPainter->UpdateOcclusionRT();
-	}
+	// no longer use curved world 
+	//UpdateCameraTransform();
+	
 }
 
 void UTopDownCameraComp::OnRegister()
@@ -247,6 +239,19 @@ void UTopDownCameraComp::InitializeCompRequirements()
 	UE_LOG(MainCameraComp, Log,
 		TEXT("%s UTopDownCameraComp::InitializeCompRequirements >> Initialization complete"),
 		*DebugName);
+}
+
+void UTopDownCameraComp::DrawUpdates(float DeltaSecond)// delta second not sued for now, but just in case
+{
+	if (MainVisionRTManager)//draw vision
+	{
+		MainVisionRTManager->UpdateCameraLOS();
+	}
+
+	if (OcclusionPainter)// draw occlusion
+	{
+		OcclusionPainter->UpdateOcclusionRT();
+	}
 }
 
 void UTopDownCameraComp::RecenterOnPawn()
@@ -630,7 +635,7 @@ void UTopDownCameraComp::UpdateCameraCurveValues(float RadialCurveStrength)
 		return;
 	}
 
-	UE_LOG(MainCameraComp, Log,
+	UE_LOG(MainCameraComp, Verbose,
 		TEXT("%s UTopDownCameraComp::UpdateCameraCurveValues >> Applying RadialCurveStrength:%f"),
 		*DebugLogHelper::GetClientDebugName(this),
 		RadialCurveStrength);

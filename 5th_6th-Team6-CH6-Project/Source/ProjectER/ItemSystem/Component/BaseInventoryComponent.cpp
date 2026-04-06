@@ -308,6 +308,10 @@ FGameplayTag UBaseInventoryComponent::GetSetByCallerTagFromStatType(const EItemS
 		return ProjectER::Status::AttackSpeed;
 	case EItemStatType::MoveSpeed:
 		return ProjectER::Status::MoveSpeed;
+	case EItemStatType::MaxHealth:
+		return ProjectER::Status::MaxHealth;
+	case EItemStatType::CriticalChance:
+		return ProjectER::Status::CritChance;
 	default:
 		return FGameplayTag();
 	}

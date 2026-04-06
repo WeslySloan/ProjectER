@@ -10,7 +10,10 @@
 
 class USkillEffectDataAsset;
 class USkillNiagaraSpawnConfig;
+class USkillSoundSpawnConfig;
 struct FGameplayEffectSpec;
+struct FActiveGameplayEffectsContainer;
+struct FPredictionKey;
 
 #include "MoveBaseGEC.generated.h"
 
@@ -47,6 +50,10 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Move|Safety")
 	bool bIgnoreUnitCollision = false;
 
+	// 컨텍스트(TargetData 등) 위치가 존재하고 이동 거리 이내라면 해당 위치를 우선 사용
+	UPROPERTY(EditDefaultsOnly, Category = "Move|Safety")
+	bool bPreferContextLocation = true;
+
 	// 지면 추적 거리 고정 (에디터 수정 불가)
 	UPROPERTY(VisibleDefaultsOnly, Category = "Move|Safety")
 	float GroundTraceDistance = 500.0f;
@@ -71,6 +78,16 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, Instanced, Category = "Move|VFX")
 	TObjectPtr<USkillNiagaraSpawnConfig> EndVfx;
+
+	// --- Sound ---
+	UPROPERTY(EditDefaultsOnly, Instanced, Category = "Move|Sound")
+	TObjectPtr<USkillSoundSpawnConfig> StartSound;
+
+	UPROPERTY(EditDefaultsOnly, Instanced, Category = "Move|Sound")
+	TObjectPtr<USkillSoundSpawnConfig> MovingSound;
+
+	UPROPERTY(EditDefaultsOnly, Instanced, Category = "Move|Sound")
+	TObjectPtr<USkillSoundSpawnConfig> EndSound;
 
 	// --- Animation ---
 	// 활성 몽타주 속도 조정 여부
@@ -107,12 +124,15 @@ protected:
 	virtual void Execute(AActor* Instigator, const FVector& Direction, const UMoveBaseConfig* Config, const FGameplayEffectSpec& GESpec) const PURE_VIRTUAL(UMoveBaseGEC::Execute, );
 
 	// 이동 소요 시간 반환 (애니메이션 동기화용)
-	virtual float CalculateMoveDuration(const AActor* Instigator, const FVector& Direction, const UMoveBaseConfig* Config) const PURE_VIRTUAL(UMoveBaseGEC::CalculateMoveDuration, return 0.15f;);
+	virtual float CalculateMoveDuration(const FGameplayEffectSpec& GESpec, const AActor* Instigator, const FVector& Direction, const UMoveBaseConfig* Config) const PURE_VIRTUAL(UMoveBaseGEC::CalculateMoveDuration, return 0.15f;);
 
 	// 공통 유틸리티 함수
 	bool IsRootMotionActive(const AActor* Actor) const;
 
 	FVector CalculateMoveDirection(const FGameplayEffectSpec& GESpec, const AActor* Instigator, const UMoveBaseConfig* Config) const;
+
+	// 컨텍스트 위치와 MoveDistance를 고려한 최종 타겟 위치 계산
+	FVector CalculateTargetLocation(const FGameplayEffectSpec& GESpec, const AActor* Instigator, const UMoveBaseConfig* Config) const;
 
 	void HandleWallHit(AActor* Instigator, const FHitResult& Hit, const UMoveBaseConfig* Config, const FGameplayEffectSpec& GESpec) const;
 
@@ -120,10 +140,14 @@ protected:
 	
 	// 개별 큐 실행 헬퍼
 	void ExecuteMoveCue(const USkillNiagaraSpawnConfig* VfxConfig, const FGameplayEffectSpec& GESpec, AActor* Instigator, const FVector& Location) const;
+	void ExecuteMoveSound(const USkillSoundSpawnConfig* SoundConfig, const FGameplayEffectSpec& GESpec, AActor* Instigator, const FVector& Location) const;
 
 	// Moving 루핑 큐 추가/제거 (Direction과 Speed를 파라미터로 넘겨 클라이언트 동기화 지원)
 	void AddMovingCue(const USkillNiagaraSpawnConfig* VfxConfig, const FGameplayEffectSpec& GESpec, AActor* Instigator, const FVector& Direction = FVector::ZeroVector, float Speed = 0.0f, float Duration = 0.0f) const;
 	void RemoveMovingCue(const USkillNiagaraSpawnConfig* VfxConfig, AActor* Instigator) const;
+
+	void AddMovingSoundCue(const USkillSoundSpawnConfig* SoundConfig, const FGameplayEffectSpec& GESpec, AActor* Instigator, const FVector& Direction = FVector::ZeroVector, float Speed = 0.0f, float Duration = 0.0f) const;
+	void RemoveMovingSoundCue(const USkillSoundSpawnConfig* SoundConfig, AActor* Instigator) const;
 
 	// 활성 몽타주 속도 조정
 	void AdjustActiveMontageRate(ACharacter* Character, float MoveDuration, const UMoveBaseConfig* Config) const;

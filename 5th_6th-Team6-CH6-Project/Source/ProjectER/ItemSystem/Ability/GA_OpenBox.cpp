@@ -1,4 +1,4 @@
-﻿#include "ItemSystem/Ability/GA_OpenBox.h"
+#include "ItemSystem/Ability/GA_OpenBox.h"
 #include "Abilities/Tasks/AbilityTask_WaitDelay.h"
 #include "ItemSystem/Actor/BaseBoxActor.h"
 #include "ItemSystem/UI/W_LootingPopup.h"
@@ -10,9 +10,13 @@
 #include "CharacterSystem/Player/BasePlayerController.h"
 #include "ItemSystem/Component/LootableComponent.h"
 
+#include "GlobalUtil/StaticGlobalUtils.h"
+
 UGA_OpenBox::UGA_OpenBox()
 {
     InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
+
+    AbilityTags.AddTag(FGameplayTag::RequestGameplayTag(TEXT("Event.Interact.OpenBox")));
 }
 
 void UGA_OpenBox::ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData)
@@ -116,7 +120,7 @@ void UGA_OpenBox::TickDistanceCheck()
         return;
     }
 
-    const float Dist = FVector::Dist(Avatar->GetActorLocation(), Box->GetActorLocation());
+    const float Dist = UStaticGlobalUtils::GetDistanceToActorBounds2D(Box, Avatar->GetActorLocation());
     if (Dist > MaxLootDistance)
     {
         if (ABasePlayerController* PC = Cast<ABasePlayerController>(ActorInfo->PlayerController.Get()))

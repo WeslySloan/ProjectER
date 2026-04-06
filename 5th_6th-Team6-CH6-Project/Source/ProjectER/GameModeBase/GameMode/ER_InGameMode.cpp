@@ -10,6 +10,8 @@
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/GameSession.h"
+#include "GameModeBase/Subsystem/Session/ER_SessionSubsystem.h" // 호스트 스팀 세션 파괴 위해 추가
+#include "Engine/GameInstance.h"
 
 #include "Monster/BaseMonster.h"
 
@@ -20,6 +22,9 @@
 #include "ItemSystem/Component/BaseInventoryComponent.h"
 #include "ItemSystem/Data/BaseItemData.h"
 #include "CharacterSystem/Data/CharacterData.h"
+
+#include "LevelManagement/LevelGraphManager/LevelAreaGameStateComp/LevelAreaGameModeComponent.h"
+#include "LevelManagement/LevelAreaTrackerComponent.h"
 
 void AER_InGameMode::BeginPlay()
 {
@@ -46,6 +51,9 @@ void AER_InGameMode::PostSeamlessTravel()
 
 	// 무한 로딩을 방지하기 위해 60초 타이머 설정
 	GetWorld()->GetTimerManager().SetTimer(LoadingTimeoutHandle, this, &AER_InGameMode::HandleLoadingTimeout, 60.0f, false);
+	
+	// Notify Blueprint that we have entered a new level
+	OnLevelInstanceLoaded();
 }
 
 void AER_InGameMode::HandleLoadingTimeout()
@@ -87,7 +95,7 @@ void AER_InGameMode::InitGame(const FString& MapName, const FString& Options, FS
 void AER_InGameMode::Logout(AController* Exiting)
 {
 	// ── 게임 중 끊긴 플레이어 데이터 보존 (Super 호출 전에 처리) ──
-	if (bIsGameStarted)
+	if (bIsGameStarted && !bIsGameEnd)
 	{
 		APlayerController* PC = Cast<APlayerController>(Exiting);
 		if (PC && PC->PlayerState)
@@ -184,10 +192,36 @@ void AER_InGameMode::Logout(AController* Exiting)
 					}
 				}
 
+				// [전민성 요구사항] 도중 퇴장한 플레이어 강제 사망 및 팀 승패 처리
+				// 데이터(HP, 인벤토리 등)를 살아있던 원 상태 그대로 데이터 구조체(Data)에 안전하게 보존한 뒤,
+				// 실제 게임 월드 상의 폰은 사망(Death) 처리하여 팀 탈락 여부(EndGame) 로직을 정상 진행시킵니다.
+				if (!Data.bIsDead && ERPS)
+				{
+					if (OwnedPawn)
+					{
+						if (ABaseCharacter* Char = Cast<ABaseCharacter>(OwnedPawn))
+						{
+							Char->HandleDeath(); // 캐릭터 몸뚱이를 시체 상태로 전환 (애니메이션, 콜리전)
+						}
+					}
+					
+					// UnPossess 이후 Pawn에서 PlayerState를 찾는 NotifyPlayerDied를 우회하여 전용 함수 호출
+					this->NotifyDisconnectedPlayerDied(ERPS); 
+					
+					ERPS->bIsDead = true; // 안전장치
+				}
+
 				// 타임아웃 타이머 설정
+				TWeakObjectPtr<AER_InGameMode> WeakThis(this);
 				GetWorld()->GetTimerManager().SetTimer(
 					Data.TimeoutHandle, 
-					[this, UniqueIdStr]() { CleanupDisconnectedPlayer(UniqueIdStr); },
+					[WeakThis, UniqueIdStr]() 
+					{ 
+						if (WeakThis.IsValid())
+						{
+							WeakThis->CleanupDisconnectedPlayer(UniqueIdStr); 
+						}
+					},
 					ReconnectTimeoutSeconds, false);
 
 				DisconnectedPlayers.Add(UniqueIdStr, Data);
@@ -213,6 +247,12 @@ void AER_InGameMode::Logout(AController* Exiting)
 	}
 
 	UE_LOG(LogTemp, Warning, TEXT("[GM] Logout. RemainingPlayers=%d"), RemainingPlayers);
+
+	// 게임이 종료된 상태면 승패/인원 관련 처리를 더 이상 진행하지 않음
+	if (bIsGameEnd)
+	{
+		return;
+	}
 
 	if (!bIsGameStarted)
 	{
@@ -246,6 +286,13 @@ void AER_InGameMode::Logout(AController* Exiting)
 
 void AER_InGameMode::PreLogin(const FString& InAddress, const FString& Options, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage)
 {
+	// [전민성 요구사항] 게임 종료 상태에서는 재접속도 원천 차단
+	if (bIsGameEnd)
+	{
+		ErrorMessage = TEXT("Game has already ended. Reconnection is disabled.");
+		return;
+	}
+
 	// 게임 시작 전(로비)이면 무조건 통과
 	if (!bIsGameStarted)
 	{
@@ -258,6 +305,21 @@ void AER_InGameMode::PreLogin(const FString& InAddress, const FString& Options, 
 
 	if (!UniqueIdStr.IsEmpty() && DisconnectedPlayers.Contains(UniqueIdStr))
 	{
+		const FDisconnectedPlayerData& Data = DisconnectedPlayers[UniqueIdStr];
+
+		// [전민성 요구사항] 탈락 확정(Eliminated) 팀은 재접속 불가
+		if (AER_GameState* ERGS = GetGameState<AER_GameState>())
+		{
+			const int32 TeamIdx = static_cast<int32>(Data.TeamType);
+			// 탈락 여부가 이미 전멸 상태로 캐싱되어있는지(TeamElimination 맵) 확인
+			if (ERGS->TeamElimination.Contains(TeamIdx) && ERGS->TeamElimination[TeamIdx])
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[GM] PreLogin >> Team is already eliminated. Reconnect rejected: %s"), *UniqueIdStr);
+				ErrorMessage = TEXT("Your team has been eliminated.");
+				return;
+			}
+		}
+
 		UE_LOG(LogTemp, Warning, TEXT("[GM] PreLogin >> Reconnecting player allowed: %s"), *UniqueIdStr);
 		Super::PreLogin(InAddress, Options, UniqueId, ErrorMessage);
 		return;
@@ -378,13 +440,31 @@ void AER_InGameMode::PostLogin(APlayerController* NewPlayer)
 			*UniqueIdStr, static_cast<int32>(NewERPS->TeamType), NewERPS->KillCount, NewERPS->DeathCount, NewERPS->AssistCount);
 	}
 
+	// [전민성 요구사항] 재접속에 성공하면 다시 생존 상태(Revive)로 복귀
+	// (로그아웃 직전에 살아있었음 -> FoundData->bIsDead == false 이므로 NewERPS->bIsDead 도 이미 false로 복원됨)
+	if (FoundData->PreservedPawn.IsValid() && !FoundData->bIsDead) 
+	{
+		if (ABaseCharacter* Char = Cast<ABaseCharacter>(FoundData->PreservedPawn.Get()))
+		{
+			// 강제 즉사 스태깅(HandleDeath 시체 상태) 되었던 캐릭터를 원래 자리에서 다시 일으켜 세움
+			Char->Revive(Char->GetActorLocation());
+			UE_LOG(LogTemp, Warning, TEXT("[GM] PostLogin >> Pawn Revived successfully for: %s"), *UniqueIdStr);
+		}
+	}
+
 	// GameState TeamCache에 재접속 플레이어 다시 추가
 	AER_GameState* ERGS = GetGameState<AER_GameState>();
 	if (ERGS && NewERPS)
 	{
 		const int32 TeamIdx = static_cast<int32>(NewERPS->TeamType);
-		TArray<TWeakObjectPtr<AER_PlayerState>>& TeamArr = ERGS->GetTeamArray(TeamIdx);
-		TeamArr.AddUnique(NewERPS);
+		TArray<FString>& TeamArr = ERGS->GetTeamArray(TeamIdx);
+		
+		const FUniqueNetIdRepl UID = NewERPS->GetUniqueId();
+		FString NewPlayerUniqueIdStr = UID.IsValid() ? UID->ToString() : NewERPS->GetPlayerName();
+		if (!NewPlayerUniqueIdStr.IsEmpty())
+		{
+			TeamArr.AddUnique(NewPlayerUniqueIdStr);
+		}
 	}
 
 	// 재접속 플레이어에게 인게임 입력 모드 및 프리로드 지시
@@ -483,6 +563,13 @@ void AER_InGameMode::DisConnectClient(APlayerController* PC)
 		ERPC->Client_ReturnToMainMenu(TEXT("GameOver"));
 	}
 
+	// 호스트(Listen Server 본인)는 자신을 Kick 할 수 없습니다. 
+	// 호스트는 OpenLevel을 통해 메인 메뉴로 이동하면 자동으로 방이 터지고 넷드라이버가 닫힙니다.
+	if (PC->IsLocalController())
+	{
+		return;
+	}
+
 	TWeakObjectPtr<APlayerController> WeakPC(PC);
 	TWeakObjectPtr<AER_InGameMode> WeakThis(this);
 
@@ -494,6 +581,45 @@ void AER_InGameMode::DisConnectClient(APlayerController* PC)
 				WeakThis->GameSession->KickPlayer(WeakPC.Get(), FText::FromString(TEXT("Defeated")));
 			}
 		}, 0.2f, false);
+}
+
+void AER_InGameMode::ShutdownServerForHost()
+{
+	UE_LOG(LogTemp, Warning, TEXT("[GM] Host requested server shutdown. Evacuating clients..."));
+
+	// 1. 호스트를 제외한 모든 클라이언트에게 귀환 명령 송신
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Get();
+		
+		if (IsValid(PC) && !PC->IsLocalController()) 
+		{
+			if (ABasePlayerController* ERPC = Cast<ABasePlayerController>(PC))
+			{
+				ERPC->Client_ReturnToMainMenu(TEXT("Host Closed Server"));
+			}
+		}
+	}
+
+	// 2. 1초 대기 후 호스트 본인도 로비로 이동하며 방 폭파
+	FTimerHandle ShutdownTimer;
+	TWeakObjectPtr<AER_InGameMode> WeakThis(this);
+	GetWorld()->GetTimerManager().SetTimer(ShutdownTimer, [WeakThis]()
+	{
+		if (WeakThis.IsValid())
+		{
+			if (UWorld* World = WeakThis->GetWorld())
+			{
+				if (APlayerController* HostPC = World->GetFirstPlayerController())
+				{
+					if (ABasePlayerController* HostERPC = Cast<ABasePlayerController>(HostPC))
+					{
+						HostERPC->Client_ReturnToMainMenu(TEXT("Server Shutdown Complete"));
+					}
+				}
+			}
+		}
+	}, 1.0f, false);
 }
 
 void AER_InGameMode::RequestTeleportToRegion(ACharacter* TargetCharacter, int32 RegionIndex)
@@ -556,6 +682,12 @@ void AER_InGameMode::StartGame()
 
 				FTransform Location = RespawnSS->GetRespawnPointLocation(Idx);
 				PC->GetPawn()->SetActorTransform(Location);
+
+				if (ULevelAreaTrackerComponent* Tracker = PC->GetPawn()->FindComponentByClass<ULevelAreaTrackerComponent>())
+				{
+					Tracker->UpdateArea();
+				}
+
 				UE_LOG(LogTemp, Log, TEXT("[GM] Success Get SpawnPoint %d"), Idx);
 			}
 			else
@@ -640,9 +772,63 @@ void AER_InGameMode::EndGame_Internal()
 	PlayersInitialized = 0;
 	PlayersReady = 0;
 
+	// 게임이 종료되어 로비로 돌아가기 전에 현재 호스트의 스팀 세션을 먼저 내립니다.
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		if (UER_SessionSubsystem* SessionSubsystem = GI->GetSubsystem<UER_SessionSubsystem>())
+		{
+			SessionSubsystem->DestroyGameSession();
+		}
+	}
+
 	UE_LOG(LogTemp, Warning, TEXT("[GM] Player is Zero -> ServerTravel to Lobby"));
 
 	GetWorld()->ServerTravel(TEXT("/Game/Level/Level_MainMenu"), true);
+}
+
+void AER_InGameMode::NotifyDisconnectedPlayerDied(AER_PlayerState* TargetPS)
+{
+	if (!HasAuthority() || !TargetPS)
+		return;
+
+	UE_LOG(LogTemp, Warning, TEXT("[GM] : Start NotifyDisconnectedPlayerDied (Disconnected Player)"));
+
+	AER_GameState* ERGS = GetGameState<AER_GameState>();
+	if (!ERGS)
+		return;
+
+	if (UER_RespawnSubsystem* RespawnSS = GetWorld()->GetSubsystem<UER_RespawnSubsystem>())
+	{
+		TArray<APlayerState*> DummyAssists;
+		RespawnSS->HandlePlayerDeath(*TargetPS, *ERGS, nullptr, DummyAssists);
+
+		// 탈락 방지 페이즈인지 확인
+		const int32 Phase = ERGS->GetCurrentPhase();
+		const bool bCanEliminationProtect = (Phase == 1 || Phase == 2);
+
+		// 전멸 판정 가동
+		if (!bCanEliminationProtect && RespawnSS->EvaluateTeamElimination(*TargetPS, *ERGS))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[GM] : NotifyDisconnectedPlayerDied , EvaluateTeamElimination = true"));
+
+			const int32 TeamIdx = static_cast<int32>(TargetPS->TeamType);
+			RespawnSS->StopResapwnTimer(*ERGS, TeamIdx);
+			RespawnSS->SetTeamLose(*ERGS, TeamIdx);
+
+			int32 LastTeamIdx = RespawnSS->CheckIsLastTeam(*ERGS);
+			if (LastTeamIdx != -1)
+			{
+				RespawnSS->SetTeamWin(*ERGS, LastTeamIdx);
+				bIsGameStarted = false;
+				bIsGameEnd = true;
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[GM] : NotifyDisconnectedPlayerDied , EvaluateTeamElimination = false"));
+			RespawnSS->StartRespawnTimer(*TargetPS, *ERGS);
+		}
+	}
 }
 
 void AER_InGameMode::NotifyPlayerDied(ACharacter* VictimCharacter, APlayerState* KillerPS, const TArray<APlayerState*>& Assists)
@@ -686,6 +872,9 @@ void AER_InGameMode::NotifyPlayerDied(ACharacter* VictimCharacter, APlayerState*
 			if (LastTeamIdx != -1)
 			{
 				RespawnSS->SetTeamWin(*ERGS, LastTeamIdx);
+				// 승리 판정 시 게임 종료를 알림
+				bIsGameStarted = false;
+				bIsGameEnd = true;
 			}
 		}
 		else
@@ -735,6 +924,25 @@ void AER_InGameMode::HandlePhaseTimeUp()
 	{
 		ERGS->SetCurrentPhase(ERGS->GetCurrentPhase() + 1);
 		// 페이즈에 따라 작동할 코드 넣기
+  	ULevelAreaGameModeComponent* AreaGSComp = GetComponentByClass<ULevelAreaGameModeComponent>();
+		if(ERGS->GetCurrentPhase() != 1)
+		{
+			// 1페이즈에는 금지 구역을 지정하지 않도록 수정
+			AreaGSComp->SetPhase(ERGS->GetCurrentPhase());
+		}
+
+		/*//Updated -> Internally the ULevelAreaGameModeComponent does not make danger zone on first phase
+		AreaGSComp->SetPhase(ERGS->GetCurrentPhase());*/
+
+		//FString Text = "";
+		//for (auto& aa : AreaGSComp->HazardOrder)
+		//{
+		//	Text.Append(" -> ");
+		//	Text.AppendInt(aa);
+
+		//}
+		//UE_LOG(LogTemp, Log, TEXT("[GM] AreaGSComp->HazardOrder : %s"), *Text);
+
 		UER_ObjectSubsystem* ObjectSS = GetWorld()->GetSubsystem<UER_ObjectSubsystem>();
 		if (ObjectSS)
 		{
@@ -749,6 +957,9 @@ void AER_InGameMode::HandlePhaseTimeUp()
 	// 이후에 10초에서 180초로 수정
 	PhaseSS->StartPhaseTimer(*ERGS, PhaseDuration);
 	PhaseSS->StartNoticeTimer(PhaseDuration);
+
+	// bp exposed function for comp reaction
+	OnPhaseTimeUp(ERGS->GetCurrentPhase());
 }
 
 void AER_InGameMode::HandleObjectNoticeTimeUp()
@@ -760,18 +971,6 @@ void AER_InGameMode::HandleObjectNoticeTimeUp()
 		ObjectSS->PickSupplySpawnIndex();
 		ObjectSS->PickBossSpawnIndex();
 	}
-}
-
-void AER_InGameMode::TEMP_SpawnNeutrals()
-{
-	UER_NeutralSpawnSubsystem* NeutralSS = GetWorld()->GetSubsystem<UER_NeutralSpawnSubsystem>();
-	NeutralSS->TEMP_SpawnNeutrals();
-}
-
-void AER_InGameMode::TEMP_DespawnNeutrals()
-{
-	UER_NeutralSpawnSubsystem* NeutralSS = GetWorld()->GetSubsystem<UER_NeutralSpawnSubsystem>();
-	NeutralSS->TEMP_NeutralsALLDespawn();
 }
 
 void AER_InGameMode::CleanupDisconnectedPlayer(const FString& UniqueIdStr)

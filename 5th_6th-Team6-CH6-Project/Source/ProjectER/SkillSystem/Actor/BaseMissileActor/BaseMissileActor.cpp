@@ -20,6 +20,10 @@ ABaseMissileActor::ABaseMissileActor()
 
 	// 유도 비행용 무브먼트
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));
+	
+	// 초기 속도를 로컬 좌표계가 아닌 월드 좌표계(절대 방향) 기준으로 해석하도록 설정 (곡선 비행 방지 핵심)
+	ProjectileMovement->bInitialVelocityInLocalSpace = false;
+	
 	ProjectileMovement->bRotationFollowsVelocity = true;
 	ProjectileMovement->ProjectileGravityScale = 0.0f;
 }
@@ -28,17 +32,20 @@ void ABaseMissileActor::InitializeMissile(
 	const TArray<FGameplayEffectSpecHandle>& InEffectSpecHandles,
 	AActor* InInstigatorActor,
 	AActor* InHomingTarget,
-	const FGameplayCueParameters& InHitCueParameters,
+	const FGameplayCueParameters& InHitVfxCueParameters,
+	const FGameplayCueParameters& InHitSoundCueParameters,
 	float InInitialSpeed,
 	float InMaxSpeed,
 	float InHomingAcceleration,
 	float InReachThreshold,
-	bool bInDestroyOnHit)
+	bool bInDestroyOnHit,
+	const FVector& InInitialDirection)
 {
 	EffectSpecHandles = InEffectSpecHandles;
 	InstigatorActor = InInstigatorActor;
 	HomingTargetActor = InHomingTarget;
-	HitCueParameters = InHitCueParameters;
+	HitVfxCueParameters = InHitVfxCueParameters;
+	HitSoundCueParameters = InHitSoundCueParameters;
 	ReachThreshold = InReachThreshold;
 	bDestroyOnHit = bInDestroyOnHit;
 
@@ -54,14 +61,23 @@ void ABaseMissileActor::InitializeMissile(
 			ProjectileMovement->HomingAccelerationMagnitude = InHomingAcceleration;
 		}
 
-		// 초기 발사 방향으로 속도 설정
-		ProjectileMovement->Velocity = GetActorForwardVector() * InInitialSpeed;
+		// 초기 발사 방향으로 속도 설정 (FinishSpawning 전이므로 GetActorForwardVector() 대신 직접 전달받은 방향 사용)
+		InitialTargetRotation = InInitialDirection.Rotation();
+		ProjectileMovement->Velocity = InInitialDirection.GetSafeNormal() * InInitialSpeed;
 	}
 }
 
 void ABaseMissileActor::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// FinishSpawning 내부의 ExecuteConstruction/InitializeComponent에 의해 회전값과 Velocity가 왜곡되는 것을 방지하기 위해,
+	// Transform이 확정된 시점(BeginPlay)에서 우리가 저장한 절대 방향으로 다시 한번 강제 설정합니다.
+	if (IsValid(ProjectileMovement) && ProjectileMovement->InitialSpeed > 0.f)
+	{
+		SetActorRotation(InitialTargetRotation);
+		ProjectileMovement->Velocity = GetActorForwardVector() * ProjectileMovement->InitialSpeed;
+	}
 }
 
 void ABaseMissileActor::Tick(float DeltaTime)
@@ -102,8 +118,8 @@ void ABaseMissileActor::OnReachedTarget()
 	// 1. 타겟에 효과 적용
 	ApplyEffectsToTarget(HomingTargetActor);
 
-	// 2. 적중 VFX 실행
-	ExecuteHitVfx();
+	// 2. 적중 효과 실행
+	ExecuteHitCues();
 
 	// 3. 파괴 처리
 	if (bDestroyOnHit)
@@ -134,9 +150,9 @@ void ABaseMissileActor::ApplyEffectsToTarget(AActor* TargetActor)
 	}
 }
 
-void ABaseMissileActor::ExecuteHitVfx()
+void ABaseMissileActor::ExecuteHitCues()
 {
-	if (!IsValid(InstigatorActor) || !HitCueParameters.OriginalTag.IsValid())
+	if (!IsValid(InstigatorActor))
 	{
 		return;
 	}
@@ -147,9 +163,23 @@ void ABaseMissileActor::ExecuteHitVfx()
 		return;
 	}
 
-	FGameplayCueParameters Params = HitCueParameters;
-	Params.Location = GetActorLocation();
-	Params.EffectCauser = this;
-	Params.TargetAttachComponent = HomingTargetActor->GetRootComponent();
-	InstigatorASC->ExecuteGameplayCue(HitCueParameters.OriginalTag, Params);
+	// VFX
+	if (HitVfxCueParameters.OriginalTag.IsValid())
+	{
+		FGameplayCueParameters Params = HitVfxCueParameters;
+		Params.Location = GetActorLocation();
+		Params.EffectCauser = this;
+		Params.TargetAttachComponent = IsValid(HomingTargetActor) ? HomingTargetActor->GetRootComponent() : nullptr;
+		InstigatorASC->ExecuteGameplayCue(HitVfxCueParameters.OriginalTag, Params);
+	}
+
+	// Sound
+	if (HitSoundCueParameters.OriginalTag.IsValid())
+	{
+		FGameplayCueParameters Params = HitSoundCueParameters;
+		Params.Location = GetActorLocation();
+		Params.EffectCauser = this;
+		Params.TargetAttachComponent = IsValid(HomingTargetActor) ? HomingTargetActor->GetRootComponent() : nullptr;
+		InstigatorASC->ExecuteGameplayCue(HitSoundCueParameters.OriginalTag, Params);
+	}
 }

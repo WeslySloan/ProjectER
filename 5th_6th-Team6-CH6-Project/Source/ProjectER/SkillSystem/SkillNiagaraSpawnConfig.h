@@ -41,11 +41,22 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Niagara|Transform")
 	FRotator RotationOffset = FRotator::ZeroRotator;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Niagara|Transform")
-	FVector Scale = FVector::OneVector;
-
 	UPROPERTY(EditDefaultsOnly, Category = "Niagara|GameplayCue", meta = (Categories = "GameplayCue"))
 	FGameplayTag CueTag;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Niagara|Parameters")
+	TMap<FName, float> FloatParameters;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Niagara|Parameters")
+	TMap<FName, FVector> VectorParameters;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Niagara|Parameters")
+	TMap<FName, FLinearColor> ColorParameters;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	void RefreshParameters();
+#endif
 
 	/** UObject 필드를 기존 USTRUCT로 변환 (Helper 호환용) */
 	FSkillNiagaraSpawnSettings ToSettings() const
@@ -58,8 +69,10 @@ public:
 		S.LocationOffset = LocationOffset;
 		S.RotationMode = RotationMode;
 		S.RotationOffset = RotationOffset;
-		S.Scale = Scale;
 		S.CueTag = CueTag;
+		S.FloatParameters = FloatParameters;
+		S.VectorParameters = VectorParameters;
+		S.ColorParameters = ColorParameters;
 		return S;
 	}
 };

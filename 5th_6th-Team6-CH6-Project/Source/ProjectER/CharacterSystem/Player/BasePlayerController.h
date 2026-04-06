@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "ItemSystem/Interface/I_ItemInteractable.h" // [김현수 추가분]
 #include "ItemSystem/Data/ItemRecipeRow.h" // [김현수 추가분]
@@ -189,9 +189,6 @@ private:
 	// 조합 중인지 여부
 	bool bIsCrafting = false;
 
-	// Z키 입력: 조합 시도
-	void TryStartCrafting();
-
 	// 조합 가능한 레시피 찾기 (우선순위 높은 순)
 	FItemRecipeRow* FindBestAvailableRecipe();
 
@@ -200,6 +197,11 @@ private:
 
 	// 조합 채널링 완료
 	void CompleteCrafting();
+
+	// 서버 RPC : 조합 완료 처리
+	UFUNCTION(Server, Reliable)
+	void Server_CompleteCrafting(FItemRecipeRow Recipe, int32 Mat1Index, int32 Mat2Index);
+
 
 	// 재료가 인벤토리에 있는지 확인
 	bool HasMaterialsInInventory(const FItemRecipeRow* Recipe, int32& OutMat1Index, int32& OutMat2Index);
@@ -217,6 +219,18 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Item|Drop")
 	TSubclassOf<ABaseItemActor> DroppedItemActorClass;
 
+	// ===== 아이템 조합 시스템 =====
+protected:
+
+	/** 크래프팅 상태 서버 동기화 */
+	UFUNCTION(Server, Reliable)
+	void Server_NotifyCraftingUI(bool bIsCraftingStarted);
+
+	/** 크래프팅 시도 */
+	UFUNCTION(BlueprintCallable, Category = "Interaction|Crafting")
+	void TryStartCrafting();
+
+public:
 	// 조합 취소
 	void CancelCrafting();
 
@@ -393,12 +407,6 @@ private:
 	void Server_DisConnectServer();
 
 	UFUNCTION(BlueprintCallable, Server, Reliable)
-	void Server_TEMP_SpawnNeutrals();
-
-	UFUNCTION(BlueprintCallable, Server, Reliable)
-	void Server_TEMP_DespawnNeutrals();
-
-	UFUNCTION(BlueprintCallable, Server, Reliable)
 	void Server_MoveTeam(int32 TeamIdx);
 
 	// Helper function to get hit result with curved world correction
@@ -406,6 +414,11 @@ private:
 		ECollisionChannel TraceChannel,
 		bool bTraceComplex,
 		FHitResult& OutHitResult);
+
+	UPROPERTY()
+	class AUI_AMiniMapCapture* CachedMiniMapActor;
+
+	bool NoShowScoreBoard = false;
 
 
 
@@ -480,4 +493,28 @@ private:
 	TMap<EAudioType, USoundClass*> SoundClassMap;
 
 	void SetSoundMix(EAudioType AudioType, float Volume);
+
+public:
+	void UseInventoryForUI(int32 _ind);
+
+	// Chat System
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI|Chat")
+	TSubclassOf<class UUI_ChatSystem> ChatWidgetClass;
+
+	UPROPERTY()
+	class UUI_ChatSystem* ChatWidgetInstance;
+
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_SendMessage(const FString& Message);
+
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_DisplayMessage(const FString& Message);
+
+	UFUNCTION()
+	void setChatMessage(const FString& Message);
+
+protected:
+	void OnEnterPressed();
 };

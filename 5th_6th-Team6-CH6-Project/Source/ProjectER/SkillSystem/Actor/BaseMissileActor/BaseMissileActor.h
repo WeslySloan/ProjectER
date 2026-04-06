@@ -30,12 +30,14 @@ public:
 		const TArray<FGameplayEffectSpecHandle>& InEffectSpecHandles,
 		AActor* InInstigatorActor,
 		AActor* InHomingTarget,
-		const FGameplayCueParameters& InHitCueParameters,
+		const FGameplayCueParameters& InHitVfxCueParameters,
+		const FGameplayCueParameters& InHitSoundCueParameters,
 		float InInitialSpeed,
 		float InMaxSpeed,
 		float InHomingAcceleration,
 		float InReachThreshold,
-		bool bInDestroyOnHit
+		bool bInDestroyOnHit,
+		const FVector& InInitialDirection = FVector::ForwardVector
 	);
 
 protected:
@@ -48,8 +50,8 @@ protected:
 	/** 타겟에게 효과를 적용합니다. */
 	void ApplyEffectsToTarget(AActor* TargetActor);
 
-	/** 적중 VFX를 실행합니다. */
-	void ExecuteHitVfx();
+	/** 적중 효과(VFX, Sound)를 실행합니다. */
+	void ExecuteHitCues();
 
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Missile")
@@ -69,13 +71,19 @@ protected:
 	TObjectPtr<AActor> HomingTargetActor;
 
 	UPROPERTY()
-	FGameplayCueParameters HitCueParameters;
+	FGameplayCueParameters HitVfxCueParameters;
+
+	UPROPERTY()
+	FGameplayCueParameters HitSoundCueParameters;
 
 	UPROPERTY()
 	float ReachThreshold = 50.0f;
 
 	UPROPERTY()
 	bool bDestroyOnHit = true;
+
+	UPROPERTY()
+	FRotator InitialTargetRotation; // 추가: 엔진에 의한 회전값 왜곡 방지용
 
 	bool bHasReached = false;
 };

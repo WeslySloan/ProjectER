@@ -40,48 +40,61 @@ ABaseMonster::ABaseMonster()
 	SetReplicateMovement(true);
 
 	//Tick 설정
-	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bCanEverTick = false;
 	PrimaryActorTick.bStartWithTickEnabled = false;
 
 	// Collision 설정
 	GetMesh()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	GetMesh()->VisibilityBasedAnimTickOption
+		= EVisibilityBasedAnimTickOption::OnlyTickMontagesWhenNotRendered;
+
+	GetCharacterMovement()->SetComponentTickEnabled(false);
+	GetCharacterMovement()->bOrientRotationToMovement = true;;
 
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("Spectator"));
+	GetCapsuleComponent()->SetComponentTickEnabled(false);
 
 	HitBoxComp = CreateDefaultSubobject<UBoxComponent>(TEXT("HitBoxComponent"));
+	HitBoxComp->SetComponentTickEnabled(false);
 	HitBoxComp->SetupAttachment(RootComponent);
 	HitBoxComp->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	HitBoxComp->SetCollisionProfileName(TEXT("Spectator"));
 
 	// ASC 복제, 데이터 Minimal로 되는지 확인 필요
 	ASC = CreateDefaultSubobject<UAbilitySystemComponent>(TEXT("AbilitySystemComponent"));
+	ASC->SetComponentTickEnabled(false);
 	ASC->SetIsReplicated(true);
 	ASC->SetReplicationMode(EGameplayEffectReplicationMode::Minimal);
 	
 	AttributeSet = CreateDefaultSubobject<UBaseMonsterAttributeSet>(TEXT("AttributeSet"));
-	
+
 	// StateTree은 각 클라에서 실행
 	StateTreeComp = CreateDefaultSubobject<UStateTreeComponent>(TEXT("StateTree"));
+	StateTreeComp->SetComponentTickEnabled(false);
 	StateTreeComp->SetStartLogicAutomatically(false);
 
 	// 주변 플레이어 감지용 컴포넌트
 	MonsterRangeComp = CreateDefaultSubobject<UMonsterRangeComponent>(TEXT("MonsterRangeComponent"));	
+	MonsterRangeComp->SetComponentTickEnabled(false);
 	MonsterRangeComp->SetIsReplicated(true);
 
 	//UI Component
 	HPBarWidgetComp = CreateDefaultSubobject<UWidgetComponent>(TEXT("WidgetComponent"));
+	HPBarWidgetComp->SetComponentTickEnabled(false);
 	HPBarWidgetComp->SetupAttachment(GetMesh());
 	HPBarWidgetComp->SetWidgetSpace(EWidgetSpace::Screen); // 체력바 크기가 일정할거같으니까?
 	HPBarWidgetComp->SetVisibility(false);
 
 	SoundComp = CreateDefaultSubobject<UAudioComponent>(TEXT("AudioComponent"));
+	SoundComp->SetComponentTickEnabled(false);
 	SoundComp->SetupAttachment(RootComponent);
 
 	TeamID = ETeamType::Neutral;
 
 	//ItemBox
 	LootableComp = CreateDefaultSubobject<ULootableComponent>(TEXT("LootableComponent"));
+	LootableComp->SetComponentTickEnabled(false);
 }
 
 UAbilitySystemComponent* ABaseMonster::GetAbilitySystemComponent() const
@@ -132,7 +145,7 @@ void ABaseMonster::PossessedBy(AController* newController)
 			).AddUObject(this, &ABaseMonster::OnCCChanged);
 		ASC->RegisterGameplayTagEvent(
 			FGameplayTag::RequestGameplayTag("State.Debuff.Hard.Stun"),
-			EGameplayTagEventType::AnyCountChange
+			EGameplayTagEventType::NewOrRemoved
 			).AddUObject(this, &ABaseMonster::OnCCChanged);
 	}
 }
@@ -146,6 +159,7 @@ void ABaseMonster::BeginPlay()
 		StartLocation = GetActorLocation();
 		StartRotator = GetActorRotation();
 	}
+
 	if (GetNetMode() != NM_DedicatedServer)
 	{
 		// UI 로직
@@ -154,11 +168,6 @@ void ABaseMonster::BeginPlay()
 	}
 }
 
-void ABaseMonster::Tick(float DeltaTime)
-{
-	Super::Tick(DeltaTime);
-
-}
 
 void ABaseMonster::InitMonsterData(FPrimaryAssetId MonsterAssetId, float Level)
 {
@@ -324,6 +333,7 @@ void ABaseMonster::InitVisuals()
 		return;
 	}
 	GetMesh()->SetAnimInstanceClass(MonsterData->Anim.Get());
+	AttributeSet->GetAttackRange();
 }
 
 void ABaseMonster::InitCollision()
@@ -345,10 +355,11 @@ void ABaseMonster::InitStateTree()
 
 void ABaseMonster::OnRep_IsCombat()
 {
-	if (HPBarWidgetComp)
-	{
-		HPBarWidgetComp->SetVisibility(bIsCombat);
-	}
+	// BP_BaseMonster Eventgraph에서 하는중
+	//if (HPBarWidgetComp)
+	//{
+	//	HPBarWidgetComp->SetVisibility(bIsCombat);
+	//}
 }
 
 void ABaseMonster::OnRep_IsDead()
@@ -451,12 +462,6 @@ void ABaseMonster::OnMonterHitHandle(AActor* Target)
 	{
 		SetTargetPlayer(Target);
 	}
-
-	if (bIsPhaseTrigger == false && AttributeSet->GetHPPersent() <= 0.5f)
-	{
-		bIsPhaseTrigger = true;
-		SendStateTreeEvent(MonsterTags.Phase2EventTag);
-	}
 	
 	if (IsValid(StateTreeComp) == false)
 	{
@@ -493,6 +498,9 @@ void ABaseMonster::OnMonterDeathHandle(AActor* Target)
 	LootableComp->InitializeWithItems(MonsterData->ItemList);
 	//보상 지급
 	GameplayEffectSetByCaller(Target, XPRewardEffect, MonsterTags.IncomingXPTag, MonsterData->Exp);
+
+	// BP Exposed Function for visual udpate
+	//TODO::
 }
 
 void ABaseMonster::GameplayEffectSetByCaller(AActor* Player, TSubclassOf<UGameplayEffect> GE, FGameplayTag Tag, float Amount)
@@ -512,7 +520,16 @@ void ABaseMonster::GameplayEffectSetByCaller(AActor* Player, TSubclassOf<UGamepl
 	int TeamIndex = (int)BC->GetTeamType();
 
 	AER_GameState* EPS = GetWorld()->GetGameState<AER_GameState>();
-	TArray<TWeakObjectPtr<AER_PlayerState>> TeamPSArray = EPS->GetTeamArray(TeamIndex);
+	TArray<FString>& TeamPSArrayIDs = EPS->GetTeamArray(TeamIndex);
+
+	TArray<TWeakObjectPtr<AER_PlayerState>> TeamPSArray;
+	for (const FString& IDStr : TeamPSArrayIDs)
+	{
+		if (AER_PlayerState* PS = EPS->GetPlayerStateByUniqueId(IDStr))
+		{
+			TeamPSArray.Add(PS);
+		}
+	}
 
 	FVector MonsterLocation = GetActorLocation();
 	for (int32 i = TeamPSArray.Num() - 1; i >= 0; --i)
@@ -665,8 +682,8 @@ void ABaseMonster::SendAttackRangeEvent(float AttackRange)
 {
 	if (IsValid(TargetPlayer) == false)
 	{
-		//SendStateTreeEvent(MonsterTags.TargetOnEventTag);
-		UE_LOG(LogTemp, Warning, TEXT("ABaseMonster::SendAttackRangeEvent : Not Player"));
+		SendStateTreeEvent(MonsterTags.TargetOffEventTag);
+		//UE_LOG(LogTemp, Warning, TEXT("ABaseMonster::SendAttackRangeEvent : Not Player"));
 		return;
 	}
 	
@@ -758,6 +775,12 @@ bool ABaseMonster::GetbIsDead()
 }
 
 
+
+FVector ABaseMonster::GetStartLocation()
+{
+	return StartLocation;
+}
+
 ETeamType ABaseMonster::GetTeamType() const
 {
 	return TeamID;
@@ -800,18 +823,7 @@ void ABaseMonster::HighlightActor(bool bIsHighlight, int32 StencilValue)
 
 void ABaseMonster::OnRep_TeamID()
 {
-	/*FString Team = (TeamID == ETeamType::Team_A) ? TEXT("Team_A") : 
-						(TeamID == ETeamType::Team_B) ? TEXT("Team_B") : 
-							(TeamID == ETeamType::Team_C) ? TEXT("Team_C") : TEXT("None");
-	
-	FString Message = FString::Printf(TEXT("[%s] Team Changed to: %s"), *GetName(), *Team);
-	
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Yellow, Message);
-	}
-	
-	UE_LOG(LogTemp, Warning, TEXT("%s"), *Message);*/
+
 }
 
 void ABaseMonster::Death()

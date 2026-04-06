@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
@@ -7,6 +7,8 @@
 #include "GameplayEffectTypes.h"
 #include "LineOfSight/VisionData.h"
 #include "BaseCharacter.generated.h"
+
+struct FWeaponVisualData;
 
 class UCameraComponent;
 class USpringArmComponent;
@@ -33,6 +35,8 @@ public:
 protected:
 	virtual void BeginPlay() override;
 
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
 	virtual void Tick( float DeltaTime ) override;
 	
 	virtual void PossessedBy(AController* NewController) override;
@@ -48,12 +52,7 @@ public:
 	
 #pragma region Component
 protected:
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
-	TObjectPtr<UCameraComponent> TopDownCameraComponent;
 	
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
-	TObjectPtr<USpringArmComponent> CameraBoom;
-
 	//replacement for camera comp
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Components", meta = (AllowPrivateAccess="true"))
 	TObjectPtr<UTopDownCameraComp> TopDownCameraComp=nullptr;
@@ -63,6 +62,23 @@ protected:
 	
 #pragma endregion
 
+#pragma region Weapon
+protected:
+	// 무기 장착 (InitVisuals에서 호출)
+	void InitWeapons();
+	
+	// 무기 교체 (아이템 시스템 연동 시 사용)
+	void AttachWeapon(const FWeaponVisualData& WeaponData);
+	
+	// 전체 무기 해제
+	void DetachAllWeapons();
+	
+protected:
+	// 현재 장착 중인 무기 메시 컴포넌트
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
+	TArray<TObjectPtr<UStaticMeshComponent>> WeaponMeshComponents;
+#pragma endregion
+	
 #pragma region TargetableInterface
 public:
 	// 팀 정보 반환
@@ -246,6 +262,27 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Combat|Combo")
 	FName GetNextAutoAttackSectionName();
 	
+	// 현재 공격 몽타주의 재생 속도 (PlayRate) 반환
+	// = 현재APS / 기본APS = 공격속도 증가 비율
+	UFUNCTION(BlueprintCallable, Category = "Combat|AttackSpeed")
+	float GetAttackPlayRate() const;
+	
+	// 현재 공격 주기(초) 반환 = 1 / 실제APS
+	UFUNCTION(BlueprintCallable, Category = "Combat|AttackSpeed")
+	float GetAttackCooldown() const;
+	
+	// 지정된 몽타주 섹션의 실제 재생 시간(초) 반환
+	//UFUNCTION(BlueprintCallable, Category = "Combat|AttackSpeed")
+	//float GetCurrentAttackSectionDuration(UAnimMontage* Montage, FName SectionName) const;
+	
+	// 공격 쿨다운이 지났는지 확인 (공격 가능 여부)
+	UFUNCTION(BlueprintCallable, Category = "Combat|AttackSpeed")
+	bool CanAttack() const;
+	
+	// 공격 실행 시각 기록 (GA에서 공격 시작 시 호출)
+	UFUNCTION(BlueprintCallable, Category = "Combat|AttackSpeed")
+	void MarkAttackExecuted();
+	
 protected:
 	UFUNCTION()
 	void OnRep_TargetActor();
@@ -267,6 +304,13 @@ protected:
 	// 평타 순환용 인덱스 (0, 1, 2)
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "Combat|Combo")
 	int32 AutoAttackIndex = 0;
+	
+	// 기본 공격속도 (CurveTable Level 1 기준값, InitAttributes에서 자동 캐싱)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|AttackSpeed")
+	float CachedBaseAttackSpeed = 0.625f;
+	
+	// 마지막 공격 실행 서버 시각 (공격 쿨다운 타이머)
+	float LastAttackExecuteTime = -999.f;
 	
 	// 피격 이펙트 캐싱용 변수
 	UPROPERTY(Transient)
@@ -329,10 +373,10 @@ protected:
 	class USceneCaptureComponent2D* MinimapCaptureComponent;
 	
 	// 미니맵용 얼굴 아이콘
-	UPROPERTY(VisibleAnywhere)
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Minimap")
 	class UStaticMeshComponent* MinimapIconMesh;
 
-	UPROPERTY(VisibleAnywhere)
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Minimap")
 	class UStaticMeshComponent* MinimapLineMesh;
 
 	// 미니맵용 얼굴 마테리얼
@@ -349,9 +393,36 @@ protected:
 	UPROPERTY()
 	UUI_HP_Bar* HPBarWidgetInstance;
 
+	FTimerHandle UILoadTimerHandle;
+
+	//Added for the Minimap draw interval--> previously drawing per tick
+	UFUNCTION()
+	void UpdateMinimapCapture();
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI|Bar")
+	float MinimapUpdateRate=0.1f;
+	
+	FTimerHandle MinimapCaptureTimerHandle;
+
 public:
 	// 팀 구분해서 아이콘 색상 업데이트
 	void UpdateMinimapVisuals(FLinearColor n_teamColor);
+
+	// ক্র래프팅 시 머리 위에 띄울 위젯 클래스
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Crafting")
+	TSubclassOf<UUserWidget> CraftingWidgetClass;
+
+	// 동적으로 생성된 크래프팅 위젯 컴포넌트
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Crafting")
+	class UWidgetComponent* CraftingWidgetComp;
+
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_ToggleCraftingUI(bool bShow);
+
+protected:
+	// 크래프팅 시야 판정용 타이머
+	FTimerHandle CraftingUIVisibilityTimer;
+	void UpdateCraftingUIVisibility();
 
 #pragma endregion
 

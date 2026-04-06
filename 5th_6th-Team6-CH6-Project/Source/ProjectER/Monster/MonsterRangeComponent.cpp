@@ -1,4 +1,4 @@
-#include "Monster/MonsterRangeComponent.h"
+﻿#include "Monster/MonsterRangeComponent.h"
 
 #include "Net/UnrealNetwork.h"
 #include "Components/SphereComponent.h"
@@ -121,21 +121,6 @@ void UMonsterRangeComponent::OnPlayerCountingBeginOverlap(UPrimitiveComponent* O
 		{
 			OnPlayerCountOne.Broadcast();	
 		}
-
-		//if (Debug)
-		//{
-		//	DrawDebugSphere(
-		//		GetWorld(),
-		//		RangeSphere->GetComponentLocation(),
-		//		RangeSphere->GetScaledSphereRadius(),
-		//		8,
-		//		FColor::Red,
-		//		false,
-		//		1.f,
-		//		0,
-		//		1.f
-		//	);
-		//}
 	}
 }
 
@@ -149,21 +134,6 @@ void UMonsterRangeComponent::OnPlayerCountingEndOverlap(UPrimitiveComponent* Ove
 		{
 			OnPlayerCountZero.Broadcast();
 		}
-
-		//if (Debug)
-		//{
-		//	DrawDebugSphere(
-		//		GetWorld(),
-		//		RangeSphere->GetComponentLocation(),
-		//		RangeSphere->GetScaledSphereRadius(),
-		//		8,
-		//		FColor::Green,
-		//		false,
-		//		1.f,
-		//		0,
-		//		1.f
-		//	);
-		//}
 	}
 }
 
@@ -185,18 +155,4 @@ void UMonsterRangeComponent::OnPlayerOutEndOverlap(UPrimitiveComponent* Overlapp
 			OnPlayerOut.Broadcast();
 		}
 	}
-	//if (Debug)
-	//{
-	//	DrawDebugSphere(
-	//		GetWorld(),
-	//		OutSphere->GetComponentLocation(),
-	//		OutSphere->GetScaledSphereRadius(),
-	//		8,
-	//		FColor::Green,
-	//		false,
-	//		100,
-	//		0,
-	//		1.f
-	//	);
-	//}
 }

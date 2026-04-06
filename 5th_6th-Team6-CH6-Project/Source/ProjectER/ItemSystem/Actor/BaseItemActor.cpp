@@ -18,7 +18,8 @@ ABaseItemActor::ABaseItemActor()
 	InteractionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("InteractionSphere"));
 	InteractionSphere->SetupAttachment(RootComponent);
 	InteractionSphere->SetSphereRadius(150.f);
-	InteractionSphere->SetCollisionProfileName(TEXT("Trigger"));
+
+	ApplyWorldItemCollisionSettings();
 }
 
 void ABaseItemActor::BeginPlay()
@@ -71,11 +72,49 @@ void ABaseItemActor::RefreshVisualFromItemData()
 		if (UStaticMesh* Mesh = ItemData->ItemMesh.LoadSynchronous())
 		{
 			ItemMesh->SetStaticMesh(Mesh);
+
+			// [중요]
+			// 메시 에셋 자체에 박혀 있는 Collision 설정이 다시 살아날 수 있으므로
+			// 메시를 갈아끼운 뒤에도 월드 드랍 아이템용 충돌 설정을 다시 강제 적용
+			ApplyWorldItemCollisionSettings();
 			return;
 		}
 	}
 
 	ItemMesh->SetStaticMesh(nullptr);
+	ApplyWorldItemCollisionSettings();
+}
+
+void ABaseItemActor::ApplyWorldItemCollisionSettings()
+{
+	if (ItemMesh)
+	{
+		ItemMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		ItemMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		ItemMesh->SetGenerateOverlapEvents(false);
+		ItemMesh->CanCharacterStepUpOn = ECB_No;
+		ItemMesh->SetCanEverAffectNavigation(false);
+	}
+
+	if (InteractionSphere)
+	{
+		InteractionSphere->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+		InteractionSphere->SetCollisionObjectType(ECC_WorldDynamic);
+		InteractionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
+
+		// 자동 줍기
+		InteractionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+
+		// 기본 마우스 트레이스
+		InteractionSphere->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+
+		// 프로젝트에서 실제 사용하는 CursorTrace 채널 번호로 바꿔야 함
+		InteractionSphere->SetCollisionResponseToChannel(ECC_GameTraceChannel5, ECR_Block);
+
+		InteractionSphere->SetGenerateOverlapEvents(true);
+		InteractionSphere->CanCharacterStepUpOn = ECB_No;
+		InteractionSphere->SetCanEverAffectNavigation(false);
+	}
 }
 
 void ABaseItemActor::OnOverlapBegin(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,

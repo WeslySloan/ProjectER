@@ -46,9 +46,24 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void SetbIsDead(bool Target);
 	bool GetbIsDead();
+
+	FVector GetStartLocation();
 	UMonsterRangeComponent* GetMonsterRangeComp() { return MonsterRangeComp; };
 	FMonsterTags& GetMonsterTags() { return MonsterTags; };
 	FPrimaryAssetId GetMonsterId() const { return MonsterId; }
+	UBaseMonsterAttributeSet* GetAttributeSet() { return AttributeSet; }
+
+	FVector GetStartLocation() const { return StartLocation; }
+	FRotator GetStartRotator() const { return StartRotator; }
+
+	UFUNCTION(BlueprintCallable)
+	bool GetIsFirstAttack() const { return bIsFirstAttack; }
+	UFUNCTION(BlueprintCallable)
+	uint8 GetAttackCount() const { return AttackCount; }
+	UFUNCTION(BlueprintCallable)
+	void SetIsFirstAttack(bool bIsFirst) { bIsFirstAttack = bIsFirst; }
+	UFUNCTION(BlueprintCallable)
+	void SetAttackCount(uint8 Count) { AttackCount = Count; }
 	
 protected:
 
@@ -56,14 +71,14 @@ protected:
 
 	virtual void BeginPlay() override;
 	
-	virtual void Tick(float DeltaTime) override;
-
-
 
 public:
 
 	UFUNCTION(BlueprintCallable)
 	void SendStateTreeEvent(FGameplayTag InputTag);
+
+	UFUNCTION(BlueprintCallable) // SendAttackRangeEvent();
+	void SendAttackRangeEvent(float AttackRange);
 
 private:
 
@@ -95,10 +110,6 @@ private:
 	UFUNCTION() // SendTargetOffEvent()
 	void OnTargetLostHandle();
 
-	UFUNCTION(BlueprintCallable) // SendAttackRangeEvent();
-	void SendAttackRangeEvent(float AttackRange);
-	//
-
 	// HealthBar 변경용
 	UFUNCTION()
 	void OnHealthChangedHandle(float CurrentHP, float MaxHP);
@@ -113,6 +124,14 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void InitMonsterData(FPrimaryAssetId MonsterAssetId, float Level);
 	
+	UFUNCTION(NetMulticast, BlueprintCallable, Reliable)
+	void Multicast_SetCollisionProfileName(FName ProfileName);
+
+	// 쿨다운 태그 관련
+	UFUNCTION(BlueprintCallable)
+	void OnCooldown(FGameplayTag CooldownTag, float Cooldown);
+
+
 private:
 	// 초기화 
 	void InitMonsterDataLoading(FPrimaryAssetId MonsterAssetId, float Level);
@@ -130,11 +149,6 @@ private:
 	void InitStateTree();
 
 	void InitHPBar();
-	//
-
-	// 쿨다운 태그 관련
-	UFUNCTION(BlueprintCallable)
-	void OnCooldown(FGameplayTag CooldownTag, float Cooldown);
 
 	void AddCooldownTag(FGameplayTag CooldownTag);
 
@@ -143,9 +157,6 @@ private:
 
 	UFUNCTION(BlueprintCallable)
 	bool HasASCTag(FGameplayTag Tag);
-
-	UFUNCTION(NetMulticast, BlueprintCallable, Reliable)
-	void Multicast_SetCollisionProfileName(FName ProfileName);
 
 	UFUNCTION(BlueprintCallable)
 	void GameplayEffectSetByCaller(AActor* Player, TSubclassOf<UGameplayEffect> GE, FGameplayTag Tag, float Amount);
@@ -226,17 +237,10 @@ private:
 	UPROPERTY(ReplicatedUsing = OnRep_IsDead, VisibleAnywhere, BlueprintReadWrite, Category = "StateTree", meta = (AllowPrivateAccess = "true"))
 	bool bIsDead;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "StateTree", meta = (AllowPrivateAccess = "true"))
-	float AttackUtility = 1.f;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "StateTree", meta = (AllowPrivateAccess = "true"))
-	float QSkillUtility = 1.f;
+	bool bIsFirstAttack = false;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "StateTree", meta = (AllowPrivateAccess = "true"))
-	float WSkillUtility = 1.f;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "StateTree", meta = (AllowPrivateAccess = "true"))
-	bool bIsPhaseTrigger;
+	uint8 AttackCount = 0;
 
 #pragma endregion
 

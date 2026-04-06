@@ -8,18 +8,20 @@
 #include "Abilities/Tasks/AbilityTask_WaitTargetData.h"
 #include "Abilities/Tasks/AbilityTask_WaitGameplayEvent.h"
 #include "Abilities/GameplayAbilityTargetActor.h"
+#include "CharacterSystem/GAS/AttributeSet/BaseAttributeSet.h"
 #include "SkillSystem/AbilityTask/AbilityTask_WaitGameplayEventSyn.h"
 #include "SkillSystem/SkillConfig/BaseSkillConfig.h"
 #include "SkillSystem/SkillDataAsset.h"
 #include "SkillSystem/SkillData.h"
-#include "SkillSystem/GameplyeEffect/SkillEffectDataAsset.h"
-#include "SkillSystem/GameplyeEffect/GE_SharedCooldown.h"
+#include "SkillSystem/GameplayEffect/SkillEffectDataAsset.h"
+#include "SkillSystem/GameplayEffect/GE_SharedCooldown.h"
 #include "Monster/BaseMonster.h"
 #include "CharacterSystem/Character/BaseCharacter.h"
 #include "CharacterSystem/Interface/TargetableInterface.h"
 #include "GameModeBase/State/ER_PlayerState.h"
 
 #include "AbilitySystemLog.h" // GAS 관련 로그 확인용
+#include "AbilitySystemGlobals.h" // [김현수 추가분] 태그 체크용
 
 #include "CharacterSystem/Player/BasePlayerController.h" // [김현수 추가분]
 
@@ -98,6 +100,16 @@ void USkillBase::ApplyCooldown(const FGameplayAbilitySpecHandle Handle, const FG
 		if (SpecHandle.IsValid())
 		{
 			float Duration = CachedConfig->Data.BaseCoolTime.GetValueAtLevel(GetAbilityLevel());
+			
+			// Skill Haste (스킬 가속) 반영
+			if (UAbilitySystemComponent* ASC = GetASC())
+			{
+				float Haste = ASC->GetNumericAttribute(UBaseAttributeSet::GetCooldownReductionAttribute());
+				// 공식: 최종 쿨타임 = 기본 쿨타임 / (1 + (스킬가속 / 100))
+				Duration /= (1.0f + (FMath::Max(Haste, 0.0f) / 100.0f));
+				Duration = FMath::Max(Duration, 0.1f); // 최소 쿨타임 보장
+			}
+
 			SpecHandle.Data.Get()->SetSetByCallerMagnitude(FGameplayTag::RequestGameplayTag(FName("Skill.Data.CoolTime")), Duration);
 			SpecHandle.Data.Get()->DynamicGrantedTags.AppendTags(CachedConfig->Data.CoolTimeTags);
 			ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, SpecHandle);
@@ -171,8 +183,7 @@ void USkillBase::ExecuteSkill()
 	}
 
 	// 메인 로직: 들여쓰기 없이 평탄하게 진행
-	SetSkillTagCount(ActiveTag, 1);
-	ApplyExcutionEffectToSelf(CachedConfig->GetExcutionEffects());
+	ApplyExcutionEffectToSelf(CachedConfig->GetExecutionEffects());
 
 	if (HasAuthority(&CurrentActivationInfo))
 	{
@@ -187,6 +198,11 @@ void USkillBase::OnActiveTagEventReceived(FGameplayEventData Payload)
 	if (!TryExecuteSkill())
 	{
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
+	}
+	else{
+		SetSkillTagCount(CastingTag, 0);
+		SetSkillTagCount(ActiveTag, 1);
+		ExecuteSkill();
 	}
 }
 
@@ -229,6 +245,10 @@ void USkillBase::PlayAnimMontage()
 	PlayTask->OnCancelled.AddDynamic(this, &USkillBase::OnMontageCancelled);
 	PlayTask->OnCompleted.AddDynamic(this, &USkillBase::OnMontageCompleted);
 	PlayTask->ReadyForActivation();
+
+	ABaseCharacter* BaseCharacter = Cast<ABaseCharacter>(GetAvatar());
+	if (!IsValid(BaseCharacter)) return;
+	BaseCharacter->StopMove();
 }
 
 void USkillBase::SetWaitEventActiveTag()
@@ -294,18 +314,23 @@ bool USkillBase::TryExecuteSkill()
 		return false;
 	}
 
-	if (!DoesAbilitySatisfyTagRequirements(*ASC, nullptr, nullptr, nullptr)){
+	FGameplayTagContainer RelevantTags;
+	if (!DoesAbilitySatisfyTagRequirements(*ASC, nullptr, nullptr, &RelevantTags)){
+		// 만약 차단된 원인이 오직 ActiveTag 하나뿐이라면 (글로벌 차단 태그 제외), 통과시킵니다.
+		RelevantTags.RemoveTag(UAbilitySystemGlobals::Get().ActivateFailTagsBlockedTag);
+		if (RelevantTags.Num() == 1 && RelevantTags.HasTag(ActiveTag))
+		{
+			return true;
+		}
 		return false;
 	}
 
-	SetSkillTagCount(CastingTag, 0);
-	ExecuteSkill();
 	return true;
 }
 
 void USkillBase::CompleteFinishSkill()
 {
-	SetSkillTagCount(ActiveTag, 0);
+	//SetSkillTagCount(ActiveTag, 0);
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
 }
 

@@ -10,18 +10,28 @@ class UCharacterData;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPhaseChangedBP, int32, NewPhase);
 
+// this is for the mpc update
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHazardZonesChanged, const TArray<int32>&, NewDangerZoneIDs);
+
 UCLASS()
 class PROJECTER_API AER_GameState : public AGameStateBase
 {
 	GENERATED_BODY()
 	
 public:
+	
+	AER_GameState();
+	
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void BuildTeamCache();
 	void RemoveTeamCache();
 
-	TArray<TWeakObjectPtr<AER_PlayerState>>& GetTeamArray(int32 TeamIdx);
+	TArray<FString>& GetTeamArray(int32 TeamIdx);
+
+	// 재접속 호환: UniqueId 문자열로 PlayerState 찾기
+	UFUNCTION(BlueprintPure)
+	AER_PlayerState* GetPlayerStateByUniqueId(const FString& InUniqueIdStr) const;
 
 	bool GetTeamEliminate(int32 idx);
 
@@ -42,6 +52,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Character Selection")
 	const TArray<TSoftObjectPtr<UCharacterData>>& GetAvailableCharacterData() const;
 
+	// MPC Update Reaction purpsoe
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_OnHazardPhaseChanged(const TArray<int32>& NewDangerZoneIDs);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Hazard")
+	void OnDangerZonesReceived(const TArray<int32>& NewDangerZoneIDs);
+
 
 public:
 	UPROPERTY(BlueprintReadOnly)
@@ -56,15 +73,24 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FOnPhaseChangedBP OnPhaseChanged;
 
+	UPROPERTY(BlueprintAssignable, Category = "Hazard")
+	FOnHazardZonesChanged OnHazardZonesChanged;
+
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Character Selection")
 	TArray<TSoftObjectPtr<UCharacterData>> AvailableCharacterData;
 
+
 private:
-	TArray<TArray<TWeakObjectPtr<AER_PlayerState>>> TeamCache;
+	TArray<TArray<FString>> TeamCache;
 
 	UPROPERTY(ReplicatedUsing = OnRep_Phase)
 	int32 CurrentPhase = 0;
+
+// chat
+public:
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_BroadcastChatMessage(const FString& Message);
 
 };
 

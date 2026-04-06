@@ -19,6 +19,9 @@
 
 #include "SkillSystem/SkillDataAsset.h" // 스킬용
 #include "AbilitySystemComponent.h" // 스킬용
+#include "AbilitySystemBlueprintLibrary.h" // 쿨타임용
+#include "GameplayEffect.h" // 쿨타임용 추가
+#include "Abilities/GameplayAbilityTypes.h" // 쿨타임용 추가
 #include "CharacterSystem/Data/CharacterData.h" // 스킬용
 #include "SkillSystem/SkillDataAsset.h"
 #include "SkillSystem/SkillConfig/BaseSkillConfig.h"
@@ -47,6 +50,7 @@ void UUI_MainHUD::Update_LV(float CurrentLV)
     if(IsValid(stat_LV))
     {
         stat_LV->SetText(FText::AsNumber(FMath::RoundToInt(CurrentLV)));
+		nowLevel = CurrentLV;
 	}
 }
 
@@ -126,11 +130,23 @@ void UUI_MainHUD::UPdate_MP(float CurrentMP, float MaxMP)
     }
 }
 
-void UUI_MainHUD::ShowSkillUp(bool show)
+void UUI_MainHUD::ShowSkillUp(bool show, bool isUlt/* = false */)
 {
-    if (UI_BACKGROUND_LevelUp)
+    if (UI_BACKGROUND_LevelUp && UI_BACKGROUND_LevelUp_Ult)
     {
-        UI_BACKGROUND_LevelUp->SetVisibility(show ? ESlateVisibility::Visible : ESlateVisibility::Hidden);
+       if (show)
+       {
+           if (isUlt)
+               UI_BACKGROUND_LevelUp_Ult->SetVisibility(ESlateVisibility::Visible);
+           else
+               UI_BACKGROUND_LevelUp->SetVisibility(ESlateVisibility::Visible);
+       }
+       else
+       {
+            UI_BACKGROUND_LevelUp_Ult->SetVisibility(ESlateVisibility::Hidden);
+            UI_BACKGROUND_LevelUp->SetVisibility(ESlateVisibility::Hidden);
+            skill_up_04->SetVisibility(ESlateVisibility::Hidden);
+       }
     }
 
     if (IsValid(skill_up_01))
@@ -145,10 +161,13 @@ void UUI_MainHUD::ShowSkillUp(bool show)
     {
         skill_up_03->SetVisibility(show ? ESlateVisibility::Visible : ESlateVisibility::Hidden);
     }
-    if (IsValid(skill_up_04))
+    if (isUlt)
     {
-        skill_up_04->SetVisibility(show ? ESlateVisibility::Visible : ESlateVisibility::Hidden);
-	}
+        if (IsValid(skill_up_04))
+        {
+            skill_up_04->SetVisibility(show ? ESlateVisibility::Visible : ESlateVisibility::Hidden);
+        }
+    }
 }
 
 void UUI_MainHUD::setStat(ECharacterStat stat, int32 value)
@@ -221,7 +240,23 @@ void UUI_MainHUD::UpdateSkillPoint(float _nowSP)
     }
     else
     {
-        ShowSkillUp(true);
+        bool isOverUltLevel = false;
+
+        int nowUltLevel = getSkillLevel(R_SkillTag, false);
+        if (nowLevel >= 3 && nowUltLevel < 1)
+        {
+            isOverUltLevel = true;
+        }
+        if (nowLevel >= 6 && nowUltLevel < 2)
+        {
+            isOverUltLevel = true;
+        }
+        if (nowLevel >= 9 && nowUltLevel < 3)
+        {
+            isOverUltLevel = true;
+        }
+
+        ShowSkillUp(true, isOverUltLevel);
     }
 	// UE_LOG(LogTemp, Error, TEXT("UpdateSkillPoint called with SP: %f"), _nowSP);
 }
@@ -235,6 +270,7 @@ void UUI_MainHUD::InitHeroDataHUD(UCharacterData* _HeroData)
 {
     HeroData = _HeroData;
     initSkillDataAssets();
+    UpdateSkillIcon();
 }
 
 void UUI_MainHUD::InitASCHud(UAbilitySystemComponent* _ASC)
@@ -243,8 +279,19 @@ void UUI_MainHUD::InitASCHud(UAbilitySystemComponent* _ASC)
     if (IsValid(ASC))
     {
         ASC->AbilityActivatedCallbacks.AddUObject(this, &UUI_MainHUD::OnAbilityActivated);
+
+        // Register cooldown tag events for each skill
+        for (int32 i = 0; i < SkillDataAssets.Num(); ++i)
+        {
+            if (SkillDataAssets[i] && SkillDataAssets[i]->SkillConfig)
+            {
+                for (const FGameplayTag& Tag : SkillDataAssets[i]->SkillConfig->Data.CoolTimeTags)
+                {
+                    ASC->RegisterGameplayTagEvent(Tag, EGameplayTagEventType::NewOrRemoved).AddUObject(this, &UUI_MainHUD::OnCooldownTagChanged, i);
+                }
+            }
+        }
     }
-    
 }
 
 void UUI_MainHUD::StartRespawn(float _RespawnTime)
@@ -280,9 +327,10 @@ void UUI_MainHUD::NativeConstruct()
     RefreshInventoryGridLayout();
     UpdateInventoryUI();
 
-    if (UI_BACKGROUND_LevelUp)
+    if (UI_BACKGROUND_LevelUp && UI_BACKGROUND_LevelUp_Ult)
     {
         UI_BACKGROUND_LevelUp->SetVisibility(ESlateVisibility::Collapsed);
+        UI_BACKGROUND_LevelUp_Ult->SetVisibility(ESlateVisibility::Collapsed);
     }
 
     // 툴팁 init
@@ -304,7 +352,6 @@ void UUI_MainHUD::NativeConstruct()
         skill_01->OnHovered.AddDynamic(this, &UUI_MainHUD::OnSkill01Hovered);
         skill_01->OnUnhovered.AddDynamic(this, &UUI_MainHUD::HideTooltip);
         skill_01->OnClicked.AddDynamic(this, &UUI_MainHUD::OnSkillClicked_Q);
-
     }
     if (skill_02)
     {
@@ -372,7 +419,7 @@ void UUI_MainHUD::NativeConstruct()
     // UI 애니메이션 강제 바인딩
     HeadHitAnim_01 = GetWidgetAnimationByName(TEXT("AN_HeadHitAnim_01"));
     HeadHitAnim_02 = GetWidgetAnimationByName(TEXT("AN_HeadHitAnim_02"));
-
+    RestrictedSign_01 = GetWidgetAnimationByName(TEXT("AN_RestrictedSign_01"));
     // 페이즈 And Time
     GetWorld()->GetTimerManager().SetTimer(
         PhaseAndTimeTimer,
@@ -400,6 +447,22 @@ void UUI_MainHUD::NativeConstruct()
     //    &UUI_MainHUD::AddKillPerSecond,
     //    1.0f,
     //    true);
+    
+}
+
+void UUI_MainHUD::NativeDestruct()
+{
+    // Clear all skill timers to prevent crash on map transition / destruction
+    if (UWorld* World = GetWorld())
+    {
+        for (int32 i = 0; i < 4; i++)
+        {
+            World->GetTimerManager().ClearTimer(SkillTimerHandles[i]);
+        }
+        World->GetTimerManager().ClearTimer(PhaseAndTimeTimer);
+    }
+
+    Super::NativeDestruct();
 }
 
 /// 마우스 이벤트!
@@ -437,7 +500,7 @@ void UUI_MainHUD::OnSkill01Hovered()
     if (IsValid(SkillDataAssets[0]))
     {
         FSkillTooltipData nowSkill = SkillDataAssets[0]->GetSkillTooltipData(getSkillLevel(Q_SkillTag, false));
-        ShowTooltip(skill_01, nowSkill.SKillIcon, nowSkill.SkillName, nowSkill.ShortDescription, nowSkill.DetailedDescription, nowSkill.CostDescription, true);
+        ShowTooltip(skill_01, nowSkill.SkillName, nowSkill.ShortDescription, nowSkill.DetailedDescription, nowSkill.CostDescription, true);
     }
 
 
@@ -463,7 +526,7 @@ void UUI_MainHUD::OnSkill02Hovered()
     if (IsValid(SkillDataAssets[1]))
     {
         FSkillTooltipData nowSkill = SkillDataAssets[1]->GetSkillTooltipData(getSkillLevel(Q_SkillTag, false));
-        ShowTooltip(skill_02, nowSkill.SKillIcon, nowSkill.SkillName, nowSkill.ShortDescription, nowSkill.DetailedDescription, nowSkill.CostDescription, true);
+        ShowTooltip(skill_02, nowSkill.SkillName, nowSkill.ShortDescription, nowSkill.DetailedDescription, nowSkill.CostDescription, true);
     }
 }
 
@@ -474,7 +537,7 @@ void UUI_MainHUD::OnSkill03Hovered()
     if (IsValid(SkillDataAssets[2]))
     {
         FSkillTooltipData nowSkill = SkillDataAssets[2]->GetSkillTooltipData(getSkillLevel(Q_SkillTag, false));
-        ShowTooltip(skill_03, nowSkill.SKillIcon, nowSkill.SkillName, nowSkill.ShortDescription, nowSkill.DetailedDescription, nowSkill.CostDescription, true);
+        ShowTooltip(skill_03, nowSkill.SkillName, nowSkill.ShortDescription, nowSkill.DetailedDescription, nowSkill.CostDescription, true);
     }
 }
 
@@ -487,7 +550,7 @@ void UUI_MainHUD::OnSkill04Hovered()
         if (ASC)
         {
             FSkillTooltipData nowSkill = SkillDataAssets[3]->GetSkillTooltipData(getSkillLevel(Q_SkillTag, false));
-            ShowTooltip(skill_04, nowSkill.SKillIcon, nowSkill.SkillName, nowSkill.ShortDescription, nowSkill.DetailedDescription, nowSkill.CostDescription, true);
+            ShowTooltip(skill_04, nowSkill.SkillName, nowSkill.ShortDescription, nowSkill.DetailedDescription, nowSkill.CostDescription, true);
         }
     }
 }
@@ -508,11 +571,11 @@ void UUI_MainHUD::OnSkillLevelUp04Hovered()
 {
 }
 
-void UUI_MainHUD::ShowTooltip(UWidget* AnchorWidget, UTexture2D* Icon, FText Name, FText ShortDesc, FText DetailDesc, FText CostDesc, bool showUpper)
+void UUI_MainHUD::ShowTooltip(UWidget* AnchorWidget, FText Name, FText ShortDesc, FText DetailDesc, FText CostDesc, bool showUpper)
 {
     if (TooltipManager)
     {
-		TooltipManager->ShowTooltip(AnchorWidget, Icon, Name, ShortDesc, DetailDesc, CostDesc, showUpper);
+		TooltipManager->ShowTooltip(AnchorWidget, Name, ShortDesc, DetailDesc, CostDesc, showUpper);
     }
 
 
@@ -619,13 +682,19 @@ void UUI_MainHUD::HandleMinimapClicked(const FPointerEvent& InMouseEvent)
     float OffsetXRatio = AlphaX - 0.5f;
     float OffsetYRatio = AlphaY - 0.5f;
 
+    float minimapGap = 45.0f;
+    float RotationRad = FMath::DegreesToRadians(minimapGap);
+
+    float RotatedOffsetX = OffsetXRatio * FMath::Cos(RotationRad) - OffsetYRatio * FMath::Sin(RotationRad);
+    float RotatedOffsetY = OffsetXRatio * FMath::Sin(RotationRad) + OffsetYRatio * FMath::Cos(RotationRad);
+
+
     float MapWidth = MinimapCaptureComponent->OrthoWidth;
 
-    float RelativeWorldX = -(OffsetYRatio * MapWidth);
-    float RelativeWorldY = (OffsetXRatio * MapWidth);
+    float RelativeWorldX = -(RotatedOffsetY * MapWidth);
+    float RelativeWorldY = (RotatedOffsetX * MapWidth);
 
     FVector CameraLoc = MinimapCaptureComponent->GetComponentLocation();
-
     // 최종 목적지 계산
     FVector TargetWorldPos = FVector(CameraLoc.X + RelativeWorldX, CameraLoc.Y + RelativeWorldY, CameraLoc.Z);
 
@@ -835,32 +904,27 @@ void UUI_MainHUD::OnSkillLevelUpReleased_R()
 
 void UUI_MainHUD::OnAbilityActivated(UGameplayAbility* ActivatedAbility)
 {
-    if (!ActivatedAbility) return;
+    if (!ActivatedAbility || !ASC) return;
 
-    // 현재 실행 중인 어빌리티의 Handle을 통해 Spec을 찾아오기
     FGameplayAbilitySpec* Spec = ASC->FindAbilitySpecFromHandle(ActivatedAbility->GetCurrentAbilitySpecHandle());
     if (Spec)
     {
-        for (const FGameplayTag& Tag : Spec->DynamicAbilityTags)
+        for (const FGameplayTag& Tag : Spec->GetDynamicSpecSourceTags())
         {
-            // UE_LOG(LogTemp, Error, TEXT("Spec 보유 태그: %s"), *Tag.ToString());
-            
-            // 좀 더 스마트한 방법이 없을지 더 찾아보자...
-            if (Tag == Q_SkillTag)
+            int32 SkillIndex = -1;
+            if (Tag == Q_SkillTag) SkillIndex = 0;
+            else if (Tag == W_SkillTag) SkillIndex = 1;
+            else if (Tag == E_SkillTag) SkillIndex = 2;
+            else if (Tag == R_SkillTag) SkillIndex = 3;
+
+            if (SkillIndex != -1 && SkillDataAssets.IsValidIndex(SkillIndex) && SkillDataAssets[SkillIndex] && SkillDataAssets[SkillIndex]->SkillConfig)
             {
-                OnActivateSkillCoolTime(ESkillKey::Q);
-            }
-            else if (Tag == W_SkillTag)
-            {
-                OnActivateSkillCoolTime(ESkillKey::W);
-            }
-            else if (Tag == E_SkillTag)
-            {
-                OnActivateSkillCoolTime(ESkillKey::E);
-            }
-            else if (Tag == R_SkillTag)
-            {
-                OnActivateSkillCoolTime(ESkillKey::R);
+                float RemainingTime = 0.0f;
+                float Duration = 0.0f;
+                if (GetCooldownRemainingForTag(SkillDataAssets[SkillIndex]->SkillConfig->Data.CoolTimeTags, RemainingTime, Duration))
+                {
+                    ProcessCooldown(SkillIndex, Duration, RemainingTime);
+                }
             }
         }
     }
@@ -869,35 +933,60 @@ void UUI_MainHUD::OnAbilityActivated(UGameplayAbility* ActivatedAbility)
 void UUI_MainHUD::OnActivateSkillCoolTime(ESkillKey Skill_Index)
 {
     int32 Index = static_cast<int32>(Skill_Index);
-	// UE_LOG(LogTemp, Error, TEXT("스킬 %d 사용됨, 쿨타임 시작"), Index);
-    // 인덱스 범위 체크 (Q~R)
-    if (!SkillCoolTexts[Index] || Index < 0 || Index >= 4) return;
+    if (!ASC || !SkillDataAssets.IsValidIndex(Index) || !SkillDataAssets[Index] || !SkillDataAssets[Index]->SkillConfig) return;
 
-    if (HeroData && HeroData->SkillDataAsset.IsValidIndex(Index))
+    float RemainingTime = 0.0f;
+    float Duration = 0.0f;
+    GetCooldownRemainingForTag(SkillDataAssets[Index]->SkillConfig->Data.CoolTimeTags, RemainingTime, Duration);
+
+    ProcessCooldown(Index, Duration, RemainingTime);
+}
+
+void UUI_MainHUD::ProcessCooldown(int32 SkillIndex, float Duration, float RemainingTime)
+{
+    if (SkillIndex < 0 || SkillIndex >= 4) return;
+
+    RemainingTimes[SkillIndex] = RemainingTime;
+
+    if (RemainingTime > 0.0f)
     {
-        USkillDataAsset* SkillAsset = HeroData->SkillDataAsset[Index].LoadSynchronous();
-        if (SkillAsset && SkillAsset->SkillConfig)
+        // Start or Reset Timer
+        GetWorld()->GetTimerManager().ClearTimer(SkillTimerHandles[SkillIndex]);
+        GetWorld()->GetTimerManager().SetTimer(
+            SkillTimerHandles[SkillIndex],
+            FTimerDelegate::CreateUObject(this, &UUI_MainHUD::UpdateSkillCoolDown, SkillIndex),
+            0.1f,
+            true
+        );
+    }
+    else
+    {
+        // Finish Cooldown
+        GetWorld()->GetTimerManager().ClearTimer(SkillTimerHandles[SkillIndex]);
+        if (SkillCoolTexts[SkillIndex])
         {
-            // ************************************************************************
-            // 스킬 레벨을 알아올 방법을 몰라서 일단 스킬레벨 1로 처리 차후 수정해야 함
-            // ************************************************************************
-            float baseCool = SkillAsset->SkillConfig->Data.BaseCoolTime.GetValueAtLevel(1);
-            float finalCool = baseCool * (1.0f + (nowSkillCoolReduc / 100.0f));
-
-            // 최종 쿨
-            RemainingTimes[Index] = finalCool;
-
-            // 타이머 시작
-            GetWorld()->GetTimerManager().ClearTimer(SkillTimerHandles[Index]);
-            GetWorld()->GetTimerManager().SetTimer(
-                SkillTimerHandles[Index],
-                [this, Index]() { UpdateSkillCoolDown(Index); },
-                0.1f,
-                true
-            );
-
-            // UE_LOG(LogTemp, Log, TEXT("Skill %d Timer Started: %f"), Index, finalCool);
+            SkillCoolTexts[SkillIndex]->SetText(FText::GetEmpty());
         }
+    }
+}
+
+void UUI_MainHUD::OnCooldownTagChanged(const FGameplayTag Tag, int32 NewCount, int32 SkillIndex)
+{
+    if (NewCount > 0)
+    {
+        // Cooldown Tag Added
+        if (IsValid(ASC) && SkillDataAssets.IsValidIndex(SkillIndex) && SkillDataAssets[SkillIndex] && SkillDataAssets[SkillIndex]->SkillConfig)
+        {
+            float RemainingTime = 0.0f;
+            float Duration = 0.0f;
+            GetCooldownRemainingForTag(SkillDataAssets[SkillIndex]->SkillConfig->Data.CoolTimeTags, RemainingTime, Duration);
+            ProcessCooldown(SkillIndex, Duration, RemainingTime);
+        }
+    }
+    else
+    {
+        // Cooldown Tag Removed
+        ProcessCooldown(SkillIndex, 0.0f, 0.0f);
     }
 }
 
@@ -905,25 +994,116 @@ void UUI_MainHUD::UpdateSkillCoolDown(int32 SkillIndex)
 {
     RemainingTimes[SkillIndex] -= 0.1f;
     
-    // 종료 처리
-    if (RemainingTimes[SkillIndex] <= 0.0f)
+    // 종료 처리 개선
+    UTextBlock* TargetText = SkillCoolTexts[SkillIndex];
+    if (GetWorld())
     {
-        
-        GetWorld()->GetTimerManager().ClearTimer(SkillTimerHandles[SkillIndex]);
-        if (SkillCoolTexts[SkillIndex])
+
+        if (RemainingTimes[SkillIndex] <= 0.0f)
         {
-            SkillCoolTexts[SkillIndex]->SetText(FText::GetEmpty());
+            GetWorld()->GetTimerManager().ClearTimer(SkillTimerHandles[SkillIndex]);
+            if (IsValid(TargetText))
+            {
+                TargetText->SetText(FText::GetEmpty());
+            }
+        }
+        else
+        {
+            if (IsValid(TargetText))
+            {
+                FNumberFormattingOptions Opts;
+                Opts.MinimumFractionalDigits = 1;
+                Opts.MaximumFractionalDigits = 1;
+
+                TargetText->SetText(FText::AsNumber(RemainingTimes[SkillIndex], &Opts));
+            }
         }
     }
     else
     {
-        if (SkillCoolTexts[SkillIndex])
-        {
-            FNumberFormattingOptions Opts;
-            Opts.MinimumFractionalDigits = 1;
-            Opts.MaximumFractionalDigits = 1;
+        GetWorld()->GetTimerManager().ClearTimer(SkillTimerHandles[SkillIndex]);
+    }
+}
 
-            SkillCoolTexts[SkillIndex]->SetText(FText::AsNumber(RemainingTimes[SkillIndex], &Opts));
+void UUI_MainHUD::UpdateSkillIcon()
+{
+    if (IsValid(skill_01))
+    {
+        if (SkillDataAssets.Num() > 0 && IsValid(SkillDataAssets[0]))
+        {
+            FButtonStyle NewStyle = skill_01->WidgetStyle;
+            UTexture2D* TargetIcon = SkillDataAssets[0]->GetSkillIcon();
+            FSlateBrush NewBrush;
+            NewBrush.SetResourceObject(TargetIcon);
+
+            //if (TargetIcon)
+            //{
+            //    NewBrush.ImageSize = FVector2D(TargetIcon->GetSizeX(), TargetIcon->GetSizeY());
+            //}
+            
+            NewStyle.SetNormal(NewBrush);
+            NewStyle.SetHovered(NewBrush);
+            NewStyle.SetPressed(NewBrush);
+
+            skill_01->SetStyle(NewStyle);
+        }
+    }
+    if (IsValid(skill_02))
+    {
+        if (SkillDataAssets.Num() > 1 && IsValid(SkillDataAssets[1]))
+        {
+            FButtonStyle NewStyle = skill_02->WidgetStyle;
+            UTexture2D* TargetIcon = SkillDataAssets[1]->GetSkillIcon();
+            FSlateBrush NewBrush;
+            NewBrush.SetResourceObject(TargetIcon);
+
+            //if (TargetIcon)
+            //{
+            //    NewBrush.ImageSize = FVector2D(TargetIcon->GetSizeX(), TargetIcon->GetSizeY());
+            //}
+
+            NewStyle.SetNormal(NewBrush);
+            NewStyle.SetHovered(NewBrush);
+            NewStyle.SetPressed(NewBrush);
+
+            skill_02->SetStyle(NewStyle);
+        }
+    }
+    if (IsValid(skill_03))
+    {
+        if (SkillDataAssets.Num() > 2 && IsValid(SkillDataAssets[2]))
+        {
+            FButtonStyle NewStyle = skill_03->WidgetStyle;
+            UTexture2D* TargetIcon = SkillDataAssets[2]->GetSkillIcon();
+            FSlateBrush NewBrush;
+            NewBrush.SetResourceObject(TargetIcon);
+
+            //if (TargetIcon)
+            //{
+            //    NewBrush.ImageSize = FVector2D(TargetIcon->GetSizeX(), TargetIcon->GetSizeY());
+            //}
+
+            NewStyle.SetNormal(NewBrush);
+            NewStyle.SetHovered(NewBrush);
+            NewStyle.SetPressed(NewBrush);
+
+            skill_03->SetStyle(NewStyle);
+        }
+    }
+    if (IsValid(skill_04))
+    {
+        if (SkillDataAssets.Num() > 3 && IsValid(SkillDataAssets[3]))
+        {
+            FButtonStyle NewStyle = skill_04->WidgetStyle;
+            UTexture2D* TargetIcon = SkillDataAssets[3]->GetSkillIcon();
+            FSlateBrush NewBrush;
+            NewBrush.SetResourceObject(TargetIcon);
+
+            NewStyle.SetNormal(NewBrush);
+            NewStyle.SetHovered(NewBrush);
+            NewStyle.SetPressed(NewBrush);
+
+            skill_04->SetStyle(NewStyle);
         }
     }
 }
@@ -1184,6 +1364,30 @@ void UUI_MainHUD::AddKillPerSecond()
     }
 }
 
+void UUI_MainHUD::WarningSign(int number)
+{
+    int32 TotalIntSeconds = FMath::Clamp(number, 0, 99);
+    int32 Seconds = TotalIntSeconds % 60;
+
+    int32 SecTenDigit = Seconds / 10;
+    int32 SecOneDigit = Seconds % 10;
+
+    if (RestrictedSign_01 && !IsAnimationPlaying(RestrictedSign_01))
+    {
+        PlayAnimation(RestrictedSign_01);
+    }
+
+    if (WarningNumber_ten && SegmentTextures[SecTenDigit])
+    {
+        WarningNumber_ten->SetBrushFromTexture(SegmentTextures[SecTenDigit]);
+    }
+    if (WarningNumber_one && SegmentTextures[SecOneDigit])
+    {
+        WarningNumber_one->SetBrushFromTexture(SegmentTextures[SecOneDigit]);
+    }
+
+}
+
 void UUI_MainHUD::UpdateTeamHP(int32 TeamIndex, float CurrentHP, float MaxHP)
 {
     if (TeamIndex > MAX_TEAMMATE) return;
@@ -1371,6 +1575,7 @@ void UUI_MainHUD::EnsureInventorySlotWidgets()
     for (int32 i = 0; i < DesiredSlotCount; ++i)
     {
         UW_InventorySlot* SlotWidget = CreateWidget<UW_InventorySlot>(PC, UW_InventorySlot::StaticClass());
+        
         if (!SlotWidget)
         {
             continue;
@@ -1412,7 +1617,7 @@ void UUI_MainHUD::RefreshInventoryGridLayout()
     }
 }
 
-float UUI_MainHUD::getSkillLevel(FGameplayTag SkillTag, bool levelUp)
+int32 UUI_MainHUD::getSkillLevel(FGameplayTag SkillTag, bool levelUp)
 {
     if (levelUp)
     {
@@ -1461,12 +1666,45 @@ float UUI_MainHUD::getSkillLevel(FGameplayTag SkillTag, bool levelUp)
             if (Spec.GetDynamicSpecSourceTags().HasTagExact(SkillTag) ||
                 Spec.Ability->GetAssetTags().HasTagExact(SkillTag))
             {
-                TargetSpec = &Spec;
-                break;
+                //TargetSpec = &Spec;
+                //break;
+                return Spec.Level;
             }
         }
         
-        return TargetSpec->Level;
+        //return TargetSpec->Level;
+        return -1;
     }
-    return -1;
+}
+
+bool UUI_MainHUD::GetCooldownRemainingForTag(const FGameplayTagContainer& CooldownTags, float& TimeRemaining, float& CooldownDuration)
+{
+	if (ASC && CooldownTags.Num() > 0)
+	{
+		TimeRemaining = 0.f;
+		CooldownDuration = 0.f;
+
+		FGameplayEffectQuery const Query = FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(CooldownTags);
+		TArray< TPair<float, float> > DurationAndTimeRemaining = ASC->GetActiveEffectsTimeRemainingAndDuration(Query);
+		if (DurationAndTimeRemaining.Num() > 0)
+		{
+			int32 BestIdx = 0;
+			float LongestTime = DurationAndTimeRemaining[0].Key;
+			for (int32 Idx = 1; Idx < DurationAndTimeRemaining.Num(); ++Idx)
+			{
+				if (DurationAndTimeRemaining[Idx].Key > LongestTime)
+				{
+					LongestTime = DurationAndTimeRemaining[Idx].Key;
+					BestIdx = Idx;
+				}
+			}
+
+			TimeRemaining = DurationAndTimeRemaining[BestIdx].Key;
+			CooldownDuration = DurationAndTimeRemaining[BestIdx].Value;
+
+			return true;
+		}
+	}
+
+	return false;
 }

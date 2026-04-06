@@ -8,101 +8,74 @@ class URTPoolManager;
 class UStaticMeshComponent;
 class UMaterialInstanceDynamic;
 class UStaticMesh;
-class UMaterial;
+class UMaterialInterface;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// URTDebugComponent
-//
-// Attach to any actor alongside URTMPCUpdater.
-// Each tick:
-//   • Draws a debug box outline for every active pool slot cell.
-//   • Maintains a set of plane meshes in the world, one per slot, each
-//     displaying the live ImpulseRT or ContinuousRT texture.
-//
-// Toggle RT type with bShowImpulseRT.
-// Toggle visibility with bShowDebugBoxes / bShowDebugPlanes.
-// ──────────────────────────────────────────────────────────────────────────────
+UENUM(BlueprintType)
+enum class ERTDebugChannel : uint8
+{
+    PushDirection = 0   UMETA(DisplayName = "Push Direction"),
+    Velocity      = 1   UMETA(DisplayName = "Velocity"),
+    HeightMask    = 2   UMETA(DisplayName = "Height Mask"),
+    Progression   = 3   UMETA(DisplayName = "Progression"),
+    
+    None          = 255 UMETA(Hidden)
+};
+
 UCLASS(ClassGroup = "Foliage RT", meta = (BlueprintSpawnableComponent))
 class MATERIALDRIVENINTERACTION_API URTDebugComponent : public UActorComponent
 {
-	GENERATED_BODY()
+    GENERATED_BODY()
 
 public:
 
-	URTDebugComponent();
+    URTDebugComponent();
 
-	virtual void BeginPlay() override;
-	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
-	                           FActorComponentTickFunction* ThisTickFunction) override;
+    virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    virtual void TickComponent(float DeltaTime, ELevelTick TickType,
+                               FActorComponentTickFunction* ThisTickFunction) override;
 
-	// ── Config ────────────────────────────────────────────────────────────────
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
+    bool bShowDebugBoxes = true;
 
-	/** Draw a wire box in the world for each active cell. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
-	bool bShowDebugBoxes = true;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
+    bool bShowDebugPlanes = true;
 
-	/** Spawn flat plane meshes showing the live RT texture per slot. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
-	bool bShowDebugPlanes = true;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
+    ERTDebugChannel DebugChannel = ERTDebugChannel::PushDirection;
 
-	/** true = show ImpulseRT,  false = show ContinuousRT. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
-	bool bShowImpulseRT = true;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
+    float PlaneHeight = 100.f;
 
-	/** Height above ground to float the debug planes. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
-	float PlaneHeight = 300.f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
+    FColor ActiveBoxColor = FColor(100, 220, 255);
 
-	/** Color for active slot boxes. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
-	FColor ActiveBoxColor = FColor(100, 220, 255);
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
+    TObjectPtr<UMaterialInterface> DebugPlaneMaterial;
 
-	/**
-	 * A simple unlit material with a single Texture2D parameter named "DebugTex".
-	 * Used as the parent for the plane MIDs.
-	 * Create in editor: unlit surface, Emissive = TextureParam "DebugTex".
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
-	TObjectPtr<UMaterialInterface> DebugPlaneMaterial;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
+    TObjectPtr<UStaticMesh> PlaneMesh;
 
-	/**
-	 * The plane static mesh used for RT preview (default engine plane is fine:
-	 * /Engine/BasicShapes/Plane.Plane).
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage RT|Debug")
-	TObjectPtr<UStaticMesh> PlaneMesh;
-
-	// ── Blueprint controls ────────────────────────────────────────────────────
-
-	/** Rebuild all debug planes immediately (call after changing bShowImpulseRT). */
-	UFUNCTION(BlueprintCallable, Category = "Foliage RT|Debug")
-	void RefreshDebugPlanes();
+    UFUNCTION(BlueprintCallable, Category = "Foliage RT|Debug")
+    void RefreshDebugPlanes();
 
 private:
 
-	void DrawBoxes();
-	void UpdatePlanes();
+    void DrawBoxes();
+    void UpdatePlanes();
+    void ResizePlanePool(int32 Count);
+    void UpdatePlane(int32 PlaneIndex, int32 SlotIndex);
+    void HidePlane(int32 PlaneIndex);
 
-	/** Ensure we have exactly Count plane components, creating or destroying as needed. */
-	void ResizePlanePool(int32 Count);
+    UPROPERTY(Transient)
+    TObjectPtr<URTPoolManager> PoolManager;
 
-	/** Position, scale and update the MID for a single plane. */
-	void UpdatePlane(int32 PlaneIndex, int32 SlotIndex);
+    UPROPERTY(Transient)
+    TArray<TObjectPtr<UStaticMeshComponent>> DebugPlanes;
 
-	/** Hide a plane (slot is inactive). */
-	void HidePlane(int32 PlaneIndex);
+    UPROPERTY(Transient)
+    TArray<TObjectPtr<UMaterialInstanceDynamic>> PlaneMIDs;
 
-	UPROPERTY()
-	TObjectPtr<URTPoolManager> PoolManager;
-
-	/** One plane mesh component per pool slot. */
-	UPROPERTY()
-	TArray<TObjectPtr<UStaticMeshComponent>> DebugPlanes;
-
-	/** One MID per plane — receives the RT texture each tick. */
-	UPROPERTY()
-	TArray<TObjectPtr<UMaterialInstanceDynamic>> PlaneMIDs;
-
-	static const FName PN_DebugTex;
+    static const FName PN_DebugTex;
+    static const FName PN_DebugChannel;
 };

@@ -16,6 +16,8 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/RootMotionSource.h"
+#include "GameFramework/ProjectileMovementComponent.h"
+#include "CharacterSystem/Interface/TargetableInterface.h"
 
 //#include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueNotify_Static)
 
@@ -40,11 +42,101 @@ namespace
 		const ENetMode NetMode = MyTarget->GetNetMode();
 		return MyTarget->HasAuthority() && NetMode == NM_DedicatedServer;
 	}
+
+	/** 파티클 스폰 컬링 최대 거리 (cm 단위) */
+	constexpr float MaxParticleSpawnDistanceSq = 1000.0f * 1000.0f;
+
+	/**
+	 * 원거리 파티클 컬링 판단.
+	 * 다음 조건 중 하나라도 만족하면 컬링하지 않음 (false 반환):
+	 *  1. 로컬 플레이어 캐릭터에서 1000 유닛 이내
+	 *  2. Instigator가 로컬 플레이어와 같은 팀 (아군 파티클)
+	 *  3. EffectCauser에 UProjectileMovementComponent가 있음 (투사체 파티클)
+	 * 위 조건을 모두 불만족하면 컬링함 (true 반환).
+	 */
+	bool ShouldCullParticle(const AActor* MyTarget, const FGameplayCueParameters& Parameters)
+	{
+		const UWorld* World = IsValid(MyTarget) ? MyTarget->GetWorld() : nullptr;
+		if (!IsValid(World))
+		{
+			return false;
+		}
+
+		const APlayerController* LocalPC = World->GetFirstPlayerController();
+		if (!IsValid(LocalPC))
+		{
+			return false;
+		}
+
+		const APawn* LocalPawn = LocalPC->GetPawn();
+		if (!IsValid(LocalPawn))
+		{
+			return false;
+		}
+
+		// --- 이벤트 소스 위치 결정 ---
+		FVector EffectLocation;
+		const AActor* EffectCauser = Cast<AActor>(Parameters.EffectCauser.Get());
+		if (!Parameters.Location.IsNearlyZero())
+		{
+			EffectLocation = Parameters.Location;
+		}
+		else if (IsValid(EffectCauser))
+		{
+			EffectLocation = EffectCauser->GetActorLocation();
+		}
+		else if (IsValid(MyTarget))
+		{
+			EffectLocation = MyTarget->GetActorLocation();
+		}
+		else
+		{
+			return false;
+		}
+
+		// --- 예외 1: 로컬 캐릭터 기준 1000 유닛 이내이면 무조건 표시 ---
+		if (FVector::DistSquared(LocalPawn->GetActorLocation(), EffectLocation) <= MaxParticleSpawnDistanceSq)
+		{
+			return false;
+		}
+
+		// --- 예외 2: Instigator가 아군(같은 팀)이면 무조건 표시 ---
+		const AActor* InstigatorActor = Cast<AActor>(Parameters.Instigator.Get());
+		if (IsValid(InstigatorActor))
+		{
+			const ITargetableInterface* InstigatorTeam = Cast<ITargetableInterface>(InstigatorActor);
+			const ITargetableInterface* LocalTeam = Cast<ITargetableInterface>(LocalPawn);
+			if (InstigatorTeam && LocalTeam)
+			{
+				const ETeamType InstigatorTeamType = InstigatorTeam->GetTeamType();
+				const ETeamType LocalTeamType = LocalTeam->GetTeamType();
+				if (InstigatorTeamType != ETeamType::None && InstigatorTeamType == LocalTeamType)
+				{
+					return false;
+				}
+			}
+		}
+
+		// --- 예외 3: EffectCauser에 ProjectileMovementComponent가 있으면 무조건 표시 ---
+		if (IsValid(EffectCauser) && EffectCauser->FindComponentByClass<UProjectileMovementComponent>())
+		{
+			return false;
+		}
+
+		// 모든 예외 규칙에 해당하지 않으면 컬링
+		return true;
+	}
 }
 
 bool UGCN_SpawnNiagaraBySpawnConfig::OnExecute_Implementation(AActor* MyTarget, const FGameplayCueParameters& Parameters) const
 {
 	if (ShouldSkipOnServer(MyTarget))
+	{
+		return false;
+	}
+
+	// 원거리 적 파티클 컬링 (아군/근거리/투사체 예외)
+	if (ShouldCullParticle(MyTarget, Parameters))
 	{
 		return false;
 	}
@@ -70,27 +162,37 @@ bool UGCN_SpawnNiagaraBySpawnConfig::OnExecute_Implementation(AActor* MyTarget, 
 	const AActor* const EffectCauser = Cast<AActor>(Parameters.EffectCauser.Get());
 	const AActor* const Instigator = Cast<AActor>(Parameters.Instigator.Get());
 
-	// CueTag를 기반으로 SourceActor(부착/기준 대상) 결정:
-	// - "Summoner" → 시전자(Instigator) 기준 부착
-	// - "HitTarget" → 피격 대상(MyTarget) 기준 부착
-	// - 그 외(Range 등) → EffectCauser(범위 액터 등) 기준 부착
-	const FString TagStr = Parameters.OriginalTag.ToString();
+	static const FGameplayTag TagSummoner = FGameplayTag::RequestGameplayTag(TEXT("GameplayCue.Skill.Summoner"));
+	static const FGameplayTag TagHitTarget = FGameplayTag::RequestGameplayTag(TEXT("GameplayCue.Skill.HitTarget"));
+	static const FGameplayTag TagRange = FGameplayTag::RequestGameplayTag(TEXT("GameplayCue.Skill.Range"));
+	
 	const AActor* SourceActor = nullptr;
-	if (TagStr.Contains(TEXT("Summoner")))
+	if (Parameters.OriginalTag.MatchesTag(TagSummoner))
 	{
-		SourceActor = IsValid(Instigator) ? Instigator : MyTarget;
+	    SourceActor = IsValid(Instigator) ? Instigator : MyTarget;
 	}
-	else if (TagStr.Contains(TEXT("HitTarget")))
+	else if (Parameters.OriginalTag.MatchesTag(TagHitTarget))
 	{
-		SourceActor = MyTarget;
+	    SourceActor = MyTarget;
 	}
-	else
+	else // 기본값 (Range 포함)
 	{
-		SourceActor = IsValid(EffectCauser) ? EffectCauser : MyTarget;
+	    SourceActor = EffectCauser;
+		// [최종 수정] 발사체 또는 범위 액터가 충돌 즉시 파괴된 경우(SourceActor 무효), 시전자에게 붙지 않고 재생을 취소함.
+		if (!IsValid(SourceActor))
+		{
+			return false;
+		}
 	}
 
-	FTransform SourceTransform = IsValid(SourceActor) ? SourceActor->GetActorTransform() : FTransform::Identity;
-	SourceTransform.SetLocation(Parameters.Location);
+	// 3. Transform 설정 및 Location 예외 처리
+	FTransform SourceTransform = IsValid(SourceActor) ? SourceActor->GetActorTransform() : FTransform(FRotator::ZeroRotator, Parameters.Location);
+	
+	// [핵심] Range일 때만 전달받은 위치(마우스 클릭 지점 등)로 강제 고정
+	if (Parameters.OriginalTag.MatchesTag(TagRange))
+	{
+	    SourceTransform.SetLocation(Parameters.Location);
+	}
 
 	SkillNiagaraSpawnHelper::SpawnNiagaraBySettings(World, SpawnSettings, SourceTransform, SourceActor, nullptr, Parameters.TargetAttachComponent.Get());
 	return true;

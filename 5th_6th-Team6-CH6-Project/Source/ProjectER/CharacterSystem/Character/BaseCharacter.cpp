@@ -38,6 +38,7 @@
 #include "Components/StaticMeshComponent.h" // 미니맵용
 #include "Materials/MaterialInstanceDynamic.h" // 미니맵용
 #include "Engine/StaticMesh.h" // 미니맵용
+#include "GameFramework/Volume.h" // 시야 체크 볼륨 예외처리용
 
 #include "Components/WidgetComponent.h" // HP바 위젯용
 #include "GameModeBase/State/ER_GameState.h"
@@ -92,10 +93,10 @@ ABaseCharacter::ABaseCharacter()
 	// 미니맵 캡처 기본 설정
 	MinimapCaptureComponent->SetAbsolute(false, true, false); // 순서대로: 위치, 회전, 스케일
 	// 위치는 캐릭터를 따라다녀야 함으로 앱솔루트 ㄴㄴ
-	MinimapCaptureComponent->SetRelativeLocation(FVector(0.0f, 0.0f, 1000.0f));
-	MinimapCaptureComponent->SetRelativeRotation(FRotator(-90.0f, 0.0f, 0.0f));
+	MinimapCaptureComponent->SetRelativeLocation(FVector(0.0f, 0.0f, 2000.0f));
+	MinimapCaptureComponent->SetRelativeRotation(FRotator(-90.0f, 45.0f, 0.0f));
 	MinimapCaptureComponent->ProjectionType = ECameraProjectionMode::Orthographic;
-	MinimapCaptureComponent->OrthoWidth = 2048.0f; // 이거로 미니맵 확대/축소 조절
+	MinimapCaptureComponent->OrthoWidth = 4500; // 이거로 미니맵 확대/축소 조절
 	MinimapCaptureComponent->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;	// 투명도 반영
 
 	// 미니맵용 아이콘 만들기
@@ -118,12 +119,12 @@ ABaseCharacter::ABaseCharacter()
 	// 아이콘이 항상 하늘을 향하게 배치 (캐릭터 머리 위)
 	MinimapIconMesh->SetRelativeLocation(FVector(0.f, 0.f, 500.0f));	// 미니맵 카메라가 1000이니까 그보다 아래로
 	MinimapIconMesh->SetRelativeRotation(FRotator(0.f, 90.f, 0.f));
-	MinimapIconMesh->SetRelativeScale3D(FVector(2.0f, 2.0f, 2.0f));	// 얼굴 아이콘 크기 조절
+	MinimapIconMesh->SetRelativeScale3D(FVector(5.0f, 5.0f, 5.0f));	// 얼굴 아이콘 크기 조절
 	MinimapIconMesh->SetAbsolute(false, true, false); // 회전값 고정 (중요함....)
 	MinimapIconMesh->SetCastShadow(false);	// 그림자 없애기
 
 	MinimapLineMesh->SetRelativeLocation(FVector(0, 0, 450.0f));	// 미니맵 아이콘이 500이니까 그보다 아래로
-	MinimapLineMesh->SetRelativeScale3D(FVector(3.0f, 3.0f, 3.0f));	// 얼굴 아이콘 크기 조절
+	MinimapLineMesh->SetRelativeScale3D(FVector(6.0f, 6.0f, 6.0f));	// 얼굴 아이콘 크기 조절
 	MinimapLineMesh->SetAbsolute(false, true, false); // 회전값 고정 (중요함....)
 	MinimapLineMesh->SetCastShadow(false);	// 그림자 없애기
 
@@ -151,10 +152,20 @@ ABaseCharacter::ABaseCharacter()
 	HP_MP_BarWidget->SetDrawAtDesiredSize(true);
 
 	/// 최적화 필요시 아래 플래그 조절해가면서 해결해 보기
-	//MinimapCaptureComponent->ShowFlags.SetDynamicShadows(false); // 동적 그림자
-	//MinimapCaptureComponent->ShowFlags.SetGlobalIllumination(false); // 루멘
+	
+	MinimapCaptureComponent->ShowFlags.SetDynamicShadows(false); // 동적 그림자
+	MinimapCaptureComponent->ShowFlags.SetGlobalIllumination(false); // 루멘
 	//MinimapCaptureComponent->ShowFlags.SetMotionBlur(false); // 잔상 제거용
 	//MinimapCaptureComponent->CaptureSource = ESceneCaptureSource::SCS_BaseColor; // 포스트 프로세싱 무효화
+
+	//Additional flag de-initialize
+	MinimapCaptureComponent->ShowFlags.SetAtmosphere(false);
+	MinimapCaptureComponent->ShowFlags.SetFog(false);
+	MinimapCaptureComponent->ShowFlags.SetBloom(false);
+	MinimapCaptureComponent->ShowFlags.SetAmbientOcclusion(false);
+	MinimapCaptureComponent->ShowFlags.SetAntiAliasing(false);
+	MinimapCaptureComponent->ShowFlags.SetMotionBlur(false);
+	MinimapCaptureComponent->ShowFlags.SetVolumetricFog(false);
 	
 }
 
@@ -180,6 +191,15 @@ void ABaseCharacter::BeginPlay()
 	}*/
 	
 	PreloadMontages();
+}
+
+void ABaseCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	Super::EndPlay(EndPlayReason);
+
+	/*//Minimap update timer deactivation
+	GetWorld()->GetTimerManager().ClearTimer(MinimapCaptureTimerHandle);
+	MinimapCaptureComponent->Deactivate();*/
 }
 
 void ABaseCharacter::Tick(float DeltaTime)
@@ -236,7 +256,6 @@ void ABaseCharacter::PossessedBy(AController* NewController)
 	// ASC 초기화 (서버)
 	InitAbilitySystem();
 	
-	// 최초 1회만 HP,MP 초기화
 	if (HasAuthority())
 	{
 		UBaseAttributeSet* AS = nullptr;
@@ -278,28 +297,65 @@ void ABaseCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	DOREPLIFETIME(ABaseCharacter, TeamID);
 }
 
+void ABaseCharacter::InitWeapons()
+{
+	// 기존 무기 정리
+	DetachAllWeapons();
+	
+	for (const FWeaponVisualData& WeaponData : HeroData->DefaultWeapons)
+	{
+		AttachWeapon(WeaponData); // 무기 장착
+	}
+}
+
+void ABaseCharacter::AttachWeapon(const FWeaponVisualData& WeaponData)
+{
+	if (WeaponData.WeaponMesh.IsNull()) return;
+	
+	UStaticMesh* LoadedMesh = WeaponData.WeaponMesh.LoadSynchronous();
+	if (!LoadedMesh) return;
+	
+	// 동적 컴포넌트 생성
+	// NewObject + RegisterComponent() 런타임 동적 생성
+	// 생성자에서 CreateDefaultSubobject와 달리, 게임 진행 중 자유롭게 추가/제거 가능
+	UStaticMeshComponent* WeaponComp = NewObject<UStaticMeshComponent>(this);
+	WeaponComp->SetStaticMesh(LoadedMesh);
+	WeaponComp->SetRelativeTransform(WeaponData.AttachOffset);
+	WeaponComp->SetWorldScale3D(WeaponData.WeaponScale);
+	WeaponComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	WeaponComp->RegisterComponent();
+	
+	// 소켓에 부착
+	WeaponComp->AttachToComponent(
+		GetMesh(),
+		FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+		WeaponData.AttachSocketName
+	);
+	
+	WeaponMeshComponents.Add(WeaponComp);
+}
+
+void ABaseCharacter::DetachAllWeapons()
+{
+	for (UStaticMeshComponent* Comp : WeaponMeshComponents)
+	{
+		if (IsValid(Comp))
+		{
+			Comp->DestroyComponent();
+		}
+	}
+	
+	WeaponMeshComponents.Empty();
+}
+
 ETeamType ABaseCharacter::GetTeamType() const
 {
-	
-/*<<<<<<< HEAD
-	/*AER_PlayerState* PS = GetPlayerState<AER_PlayerState>();
-	return PS->TeamType;#1#
-
-	if (const AER_PlayerState* ERPS = GetPlayerState<AER_PlayerState>())
-	{
-		return ERPS->GetTeamType();
-	}
-
-	else return TeamID;
-=======*/
-	
 	if (AER_PlayerState* PS = GetPlayerState<AER_PlayerState>())
 	{
 		return PS->TeamType;
 	}
 	
 	return TeamID;
-
 }
 
 
@@ -320,12 +376,10 @@ void ABaseCharacter::HighlightActor(bool bIsHighlight, int32 StencilValue)
 {
 	if (USkeletalMeshComponent* MyMesh = GetMesh())
 	{
-		// 커스텀 뎁스 렌더링 켜기/끄기
 		MyMesh->SetRenderCustomDepth(bIsHighlight);
 		
 		if (bIsHighlight)
 		{
-			// 스텐실 값 부여 (어떤 색으로 아웃라인을 그릴지 포스트 프로세스에 전달)
 			MyMesh->SetCustomDepthStencilValue(StencilValue);
 		}
 	}
@@ -341,12 +395,8 @@ void ABaseCharacter::OnRep_TeamID()
 	
 	if (GEngine)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Yellow, Message);
+		// GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Yellow, Message);
 	}
-	
-	// 
-	// UE_LOG(LogTemp, Warning, TEXT("%s"), *Message);
-	
 }
 
 void ABaseCharacter::Server_SetTeamID_Implementation(ETeamType NewTeamID)
@@ -398,8 +448,7 @@ void ABaseCharacter::OnRep_PlayerState()
 
 	// ASC 초기화 (클라이언트)
 	InitAbilitySystem();
-
-
+	
 	// [길 2] 클라이언트는 서버가 PlayerState를 복제해준 순간 초기화
 	InitPlayer();
 }
@@ -470,17 +519,10 @@ void ABaseCharacter::HandleLevelUp()
 			CueParams
 		);
 	}
-    
-	// UE_LOG(LogTemp, Warning, TEXT("[LevelUp] New Level: %f"), GetCharacterLevel());
 }
 
 float ABaseCharacter::GetCharacterLevel() const
 {
-	/*if (const UBaseAttributeSet* BaseSet = GetPlayerState<ABasePlayerState>() ? GetPlayerState<ABasePlayerState>()->GetAttributeSet() : nullptr)
-	{
-		return BaseSet->GetLevel();
-	}*/
-
 	if (const AER_PlayerState* ERPS = GetPlayerState<AER_PlayerState>())
 	{
 		if (const UBaseAttributeSet* AS = ERPS->GetAttributeSet())
@@ -528,8 +570,7 @@ UAnimMontage* ABaseCharacter::GetCharacterMontageByTag(FGameplayTag MontageTag)
 	{
 		return CachedMontages[MontageTag];
 	}
-    
-	// UE_LOG(LogTemp, Warning, TEXT("태그(%s)에 해당하는 몽타주가 캐싱되어 있지 않습니다!"), *MontageTag.ToString());
+	
 	return nullptr;
 }
 
@@ -554,12 +595,8 @@ void ABaseCharacter::PreloadMontages()
 
 void ABaseCharacter::Server_UpgradeSkill_Implementation(FGameplayTag SkillTag)
 {
-	// 함수 진입 확인 로그 (무슨 태그가 넘어왔는지 확인)
-	// UE_LOG(LogTemp, Warning, TEXT("[UpgradeSkill] 함수 진입! 전달받은 태그: %s"), *SkillTag.ToString());
-
 	if (!AbilitySystemComponent.IsValid())
 	{
-		// UE_LOG(LogTemp, Error, TEXT("[UpgradeSkill] 실패: ASC가 유효하지 않음!"));
 		return;
 	}
 
@@ -576,13 +613,11 @@ void ABaseCharacter::Server_UpgradeSkill_Implementation(FGameplayTag SkillTag)
 
 	if (!AS)
 	{
-		// UE_LOG(LogTemp, Error, TEXT("[UpgradeSkill] 실패: AttributeSet을 찾을 수 없음!"));
 		return;
 	}
 
 	if (AS->GetSkillPoint() <= 0.0f)
 	{
-		// UE_LOG(LogTemp, Warning, TEXT("[UpgradeSkill] 실패: 스킬 포인트 부족! 현재 SP: %f"), AS->GetSkillPoint());
 		return; 
 	}
 
@@ -605,19 +640,12 @@ void ABaseCharacter::Server_UpgradeSkill_Implementation(FGameplayTag SkillTag)
 	{
 		if (TargetSpec->Level >= 5) 
 		{
-			// UE_LOG(LogTemp, Warning, TEXT("[UpgradeSkill] 이미 마스터한 스킬! (현재 레벨: %d)"), TargetSpec->Level);
 			return;
 		}
 
 		TargetSpec->Level += 1;
 		AbilitySystemComponent->MarkAbilitySpecDirty(*TargetSpec);
 		AS->SetSkillPoint(AS->GetSkillPoint() - 1.0f);
-		
-		// UE_LOG(LogTemp, Warning, TEXT("[UpgradeSkill] 대성공! [%s] 스킬 레벨업 완료! 현재 레벨: %d"), *SkillTag.ToString(), TargetSpec->Level);
-	}
-	else
-	{
-		// UE_LOG(LogTemp, Error, TEXT("[UpgradeSkill] 실패: [%s] 태그를 가진 어빌리티를 찾을 수 없습니다!"), *SkillTag.ToString());
 	}
 }
 
@@ -637,18 +665,6 @@ void ABaseCharacter::OnRep_HeroData()
 
 void ABaseCharacter::InitAbilitySystem()
 {
-	// [전민성] - 원본 코드
-	//ABasePlayerState* PS = GetPlayerState<ABasePlayerState>();
-	//if (!PS) return;
-	// 
-	//UAbilitySystemComponent* ASC = PS->GetAbilitySystemComponent();
-	//if (!ASC) return;
-	// 
-	//// ASC 캐싱 / Actor Info 설정
-	//AbilitySystemComponent = ASC;
-	//ASC->InitAbilityActorInfo(PS, this);
-
-	// [전민성] - MVP 병합 시 ERPS로 통합 필요
 	ABasePlayerState* PS = GetPlayerState<ABasePlayerState>();
 
 	AER_PlayerState* ERPS = GetPlayerState<AER_PlayerState>();
@@ -777,10 +793,6 @@ void ABaseCharacter::InitAttributes()
 					// GE Spec 값 주입 (SetByCaller)
 					SpecHandle.Data->SetSetByCallerMagnitude(AttributeTag, Value);
 				}
-				else
-				{
-					// UE_LOG(LogTemp, Warning, TEXT("Curve Row Not Found: %s"), *RowName.ToString());
-				}
 			};
 
 		// 레벨 설정
@@ -835,6 +847,20 @@ void ABaseCharacter::InitAttributes()
 			}
 		}
 	}
+	
+	// BaseAttackSpeed 캐싱 — CurveTable Level 1 기준값 자동 추출
+	if (HeroData)
+	{
+		UCurveTable* ASTable = HeroData->StatCurveTable.LoadSynchronous();
+		if (ASTable)
+		{
+			FName ASRowName = FName(*HeroData->StatusRowName.ToString().Append("_AttackSpeed"));
+			if (FRealCurve* ASCurve = ASTable->FindCurve(ASRowName, FString()))
+			{
+				CachedBaseAttackSpeed = ASCurve->Eval(1.0f);
+			}
+		}
+	}
 }
 
 void ABaseCharacter::InitVisuals()
@@ -858,8 +884,9 @@ void ABaseCharacter::InitVisuals()
 			GetMesh()->SetAnimInstanceClass(LoadedAnimClass);
 		}
 	}
-
-	//
+	
+	// 무기 장착
+	InitWeapons();
 }
 
 void ABaseCharacter::Server_MoveToLocation_Implementation(FVector TargetLocation)
@@ -1047,64 +1074,6 @@ void ABaseCharacter::UpdatePathFollowing()
 
 		SetActorRotation(NewRotation);
 	}
-
-#if WITH_EDITOR
-	// [디버깅] 액터 Rotation 체크
-	/*FRotator MyRot = GetActorRotation();
-	UE_LOG(LogTemp, Warning, TEXT("Rotation Check -> Pitch: %f | Yaw: %f"), MyRot.Pitch, MyRot.Yaw);*/
-
-	// [디버깅] 경로 및 이동 방향 시각화
-	/*if (bShowDebug)
-	{
-		// 전체 경로 그리기 (초록색 선)
-		for (int32 i = 0; i < PathPoints.Num() - 1; ++i)
-		{
-			DrawDebugLine(
-				GetWorld(),
-				PathPoints[i],
-				PathPoints[i + 1],
-				FColor::Green,
-				false, -1.0f, 0, 3.0f // 두께 3.0
-			);
-		}
-
-		// 현재 목표 지점 (빨간색 구체)
-		if (PathPoints.IsValidIndex(CurrentPathIndex))
-		{
-			DrawDebugSphere(
-				GetWorld(),
-				PathPoints[CurrentPathIndex],
-				30.0f, // 반지름
-				12,
-				FColor::Red,
-				false, -1.0f, 0, 2.0f
-			);
-
-			// 내 위치에서 목표 지점까지 연결선 (노란색 점선)
-			DrawDebugLine(
-				GetWorld(),
-				GetActorLocation(),
-				PathPoints[CurrentPathIndex],
-				FColor::Yellow,
-				false, -1.0f, 0, 1.5f
-			);
-		}
-
-		// 실제 이동 방향 (파란색 화살표)
-		FVector Velocity = GetVelocity();
-		if (!Velocity.IsNearlyZero())
-		{
-			DrawDebugDirectionalArrow(
-				GetWorld(),
-				GetActorLocation(),
-				GetActorLocation() + Velocity.GetSafeNormal() * 100.0f, // 1m 길이
-				50.0f, // 화살표 크기
-				FColor::Blue,
-				false, -1.0f, 0, 5.0f // 두께
-			);
-		}
-	}*/
-#endif
 }
 
 void ABaseCharacter::StopPathFollowing()
@@ -1140,11 +1109,9 @@ FRotator ABaseCharacter::GetCombatGazeRotation(FName SocketName)
     
 	if (TargetActor) 
 	{
-		// 단순 ActorLocation은 발밑(Root)일 수 있으므로, 
-		// 캡슐 컴포넌트의 중간이나 특정 뼈를 노리는 보정 로직 추가
 		TargetPos = TargetActor->GetActorLocation();
         
-		// [디테일] 타겟의 키 절반만큼 위를 조준 (가슴팍)
+		// 타겟의 키 절반만큼 위를 조준 (가슴팍)
 		// ACharacter로 캐스팅 가능하다면 Capsule HalfHeight를 더해줌
 		if (ACharacter* TargetChar = Cast<ACharacter>(TargetActor))
 		{
@@ -1264,8 +1231,9 @@ void ABaseCharacter::CheckCombatTarget(float DeltaTime)
 			bool bHasAbility = (Specs.Num() > 0);
 			bool bWasActivated = false;
 			
-			if (bHasAbility)
+			if (bHasAbility && CanAttack())
 			{
+				MarkAttackExecuted();
 				bWasActivated = AbilitySystemComponent->TryActivateAbilitiesByTag(FGameplayTagContainer(AttackTag));
 			}
 			
@@ -1328,6 +1296,64 @@ FName ABaseCharacter::GetNextAutoAttackSectionName()
 	return SectionName;
 }
 
+float ABaseCharacter::GetAttackPlayRate() const
+{
+	if (CachedBaseAttackSpeed <= 0.0f) return 1.0f;
+	
+	UAbilitySystemComponent* ASC = GetAbilitySystemComponent();
+	if (!ASC) return 1.0f;
+	
+	// 현재 APS (= CurveTable + 아이템/버프가 반영된 최종 AttackSpeed 값)
+	float CurrentAPS = ASC->GetNumericAttribute(UBaseAttributeSet::GetAttackSpeedAttribute());
+	if (CurrentAPS <= 0.0f) return 1.0f;
+	
+	// PlayRate = 현재APS / 기본APS
+	// 기본 상태에서는 1.0x, 공격속도가 올라갈수록 비례 증가
+	return CurrentAPS / CachedBaseAttackSpeed;
+}
+
+float ABaseCharacter::GetAttackCooldown() const
+{
+	UAbilitySystemComponent* ASC = GetAbilitySystemComponent();
+	if (!ASC) return 1.0f;
+	
+	float CurrentAPS = ASC->GetNumericAttribute(UBaseAttributeSet::GetAttackSpeedAttribute());
+	if (CurrentAPS <= 0.0f) return 1.0f;
+	
+	// 공격 주기 = 1 / APS
+	return 1.0f / CurrentAPS;
+}
+
+// float ABaseCharacter::GetCurrentAttackSectionDuration(UAnimMontage* Montage, FName SectionName) const
+// {
+// 	if (!Montage) return 1.0f;
+	
+// 	int32 SectionIndex = Montage->GetSectionIndex(SectionName);
+// 	if (SectionIndex == INDEX_NONE) return 1.0f;
+	
+// 	// 해당 섹션의 원본 재생 시간(초) 반환
+// 	return Montage->GetSectionLength(SectionIndex);
+// }
+
+bool ABaseCharacter::CanAttack() const
+{
+	if (!GetWorld()) return false;
+	
+	float CurrentTime = GetWorld()->GetTimeSeconds();
+	float Cooldown = GetAttackCooldown();
+	
+	// 마지막 공격으로부터 공격 주기가 경과했는지 확인
+	return (CurrentTime - LastAttackExecuteTime) >= Cooldown;
+}
+
+void ABaseCharacter::MarkAttackExecuted()
+{
+	if (GetWorld())
+	{
+		LastAttackExecuteTime = GetWorld()->GetTimeSeconds();
+	}
+}
+
 void ABaseCharacter::OnRep_TargetActor()
 {
 	// 타겟 유무에 따라 Tick 활성화/비활성화
@@ -1338,15 +1364,6 @@ void ABaseCharacter::OnRep_TargetActor()
 	{
 		PathfindingTimer = 0.0f;
 	}
-
-#if WITH_EDITOR
-	/*if (bShowDebug)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[%s] Set Target Actor -> %s"),
-			*GetName(),
-			TargetActor ? *TargetActor->GetName() : TEXT("None"));
-	}*/
-#endif
 }
 
 void ABaseCharacter::ScanForEnemiesWhileMoving()
@@ -1527,6 +1544,11 @@ void ABaseCharacter::Revive(FVector RespawnLocation)
 	if (AER_PlayerState* ERPS = GetPlayerState<AER_PlayerState>())
 	{
 		AS = ERPS->GetAttributeSet();
+		ERPS->bIsDead = false;
+		ERPS->CurrentRestrictedTime = 10.0f;
+		ERPS->setUI_RestrictedTime();
+		ERPS->ForceNetUpdate();
+
 	}
 	else if (ABasePlayerState* BasePS = GetPlayerState<ABasePlayerState>())
 	{
@@ -1642,9 +1664,6 @@ void ABaseCharacter::Multicast_Revive_Implementation(FVector RespawnLocation)
 	}
 	
 	SetActorTickEnabled(true);
-    
-	// (선택) 부활 이펙트 재생
-	// UNiagaraFunctionLibrary::SpawnSystemAtLocation(...)
 }
 
 void ABaseCharacter::Multicast_Death_Implementation()
@@ -1671,6 +1690,7 @@ void ABaseCharacter::Multicast_Death_Implementation()
 		GetMesh()->SetCollisionResponseToAllChannels(ECR_Ignore);
 		GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 		GetMesh()->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);  // 플레이어 통과 가능
+		GetMesh()->SetCollisionResponseToChannel(ECC_GameTraceChannel5, ECR_Block);  // 커서 클릭 가능
 	}
 
 	// 이동 정지 및 기능 비활성화
@@ -1679,21 +1699,11 @@ void ABaseCharacter::Multicast_Death_Implementation()
 		GetCharacterMovement()->StopMovementImmediately();
 		GetCharacterMovement()->DisableMovement();
 	}
-
-	/* // 입력 차단 
-	if (APlayerController* PC = Cast<APlayerController>(GetController()))
-	{
-		PC->DisableInput(PC);
-        
-		// (선택) UI 띄우기 호출
-		// if (ABasePlayerController* BasePC = Cast<ABasePlayerController>(PC))
-		// {
-		//     BasePC->Client_SetDead(); 
-		// }
-	} */
     
 	// 틱 비활성화 (불필요한 연산 방지)
 	SetActorTickEnabled(false);
+
+
 }
 
 void ABaseCharacter::Server_SetTarget_Implementation(AActor* NewTarget)
@@ -1743,8 +1753,6 @@ void ABaseCharacter::InitUI()
 		
 			// 팀원 UI 오픈
 			ETeamType MyTeam = GetTeamType();
-
-			// UE_LOG(LogTemp, Error, TEXT("My Team : %d"), MyTeam);
 
 			if (AGameStateBase* GS = GetWorld()->GetGameState())
 			{
@@ -1812,6 +1820,19 @@ void ABaseCharacter::InitUI()
 	{
 		/// '나' 이외는 캡쳐 컴포넌트를 꺼서 성능 최적화~
 		MinimapCaptureComponent->Deactivate();
+	}
+	else  //  no more tick update
+	{
+		MinimapCaptureComponent->bCaptureEveryFrame = false;
+		MinimapCaptureComponent->bCaptureOnMovement = false;
+
+		MinimapCaptureComponent->Activate();
+
+		GetWorld()->GetTimerManager().SetTimer(
+			MinimapCaptureTimerHandle,
+			this,
+			&ABaseCharacter::UpdateMinimapCapture,
+			MinimapUpdateRate, true);
 	}
 
 	// 방장(Listen Server)과 클라이언트 모두 HP Bar 및 미니맵 아이콘 초기화 필요
@@ -1999,6 +2020,12 @@ void ABaseCharacter::OnLevelChanged()
 	}
 }
 
+void ABaseCharacter::UpdateMinimapCapture()
+{
+	if (MinimapCaptureComponent && MinimapCaptureComponent->IsActive())
+		MinimapCaptureComponent->CaptureScene();
+}
+
 void ABaseCharacter::UpdateMinimapVisuals(FLinearColor n_teamColor)
 {
 	if (MinimapLineMaterial)
@@ -2024,7 +2051,15 @@ EVisionChannel ABaseCharacter::GetVisionChannelFromVisionPlayerStateComp()
 void ABaseCharacter::InitPlayer()
 {
 	// UI 초기화 (로컬 플레이어 전용 로직이 내부에 있음)
-	InitUI();
+	//InitUI();
+
+	// 일단 임시로 2초 뒤에 로딩하도록
+	GetWorld()->GetTimerManager().SetTimer(
+	UILoadTimerHandle,
+    this,
+    &ABaseCharacter::InitUI,
+    2.0f,
+    false);
 
 	// Camera Setting for local player pawn
 	if (TopDownCameraComp)
@@ -2060,4 +2095,122 @@ void ABaseCharacter::InitPlayer()
 	}
 	
 	OnPlayerStateChosen();
+}
+
+void ABaseCharacter::Multicast_ToggleCraftingUI_Implementation(bool bShow)
+{
+	if (bShow)
+	{
+		if (CraftingWidgetClass && !CraftingWidgetComp)
+		{
+			CraftingWidgetComp = NewObject<UWidgetComponent>(this, TEXT("CraftingWidgetComp"));
+			CraftingWidgetComp->SetWidgetSpace(EWidgetSpace::Screen);
+			CraftingWidgetComp->SetWidgetClass(CraftingWidgetClass);
+			CraftingWidgetComp->SetDrawSize(FVector2D(50.f, 50.f));
+			CraftingWidgetComp->RegisterComponent();
+			CraftingWidgetComp->AttachToComponent(GetMesh(), FAttachmentTransformRules::KeepRelativeTransform);
+			CraftingWidgetComp->SetRelativeLocation(FVector(0.f, 0.f, 400.f)); // HP바(300.f)보다 더 높은 위치로 지정
+
+			// 시야 판정 타이머 시작 (0.1초마다 검사)
+			GetWorld()->GetTimerManager().SetTimer(
+				CraftingUIVisibilityTimer,
+				this,
+				&ABaseCharacter::UpdateCraftingUIVisibility,
+				0.3f,
+				true
+			);
+
+			// 즉시 1회 실행하여 최초 상태 반영
+			UpdateCraftingUIVisibility();
+		}
+	}
+	else
+	{
+		if (CraftingWidgetComp)
+		{
+			CraftingWidgetComp->DestroyComponent();
+			CraftingWidgetComp = nullptr;
+		}
+
+		// 시작했던 타이머 초기화 (파괴)
+		GetWorld()->GetTimerManager().ClearTimer(CraftingUIVisibilityTimer);
+	}
+}
+
+void ABaseCharacter::UpdateCraftingUIVisibility()
+{
+	if (!CraftingWidgetComp) return;
+
+	APlayerController* LocalPC = GetWorld()->GetFirstPlayerController();
+	if (!LocalPC) return;
+
+	ABaseCharacter* LocalChar = Cast<ABaseCharacter>(LocalPC->GetPawn());
+	if (!LocalChar) return;
+
+	// 1. 내 자신이거나 우리 팀(아군)이면 무조건 보임
+	if (this == LocalChar || this->GetTeamType() == LocalChar->GetTeamType())
+	{
+		CraftingWidgetComp->SetVisibility(true);
+		return;
+	}
+
+	// 2. 적이거나 중립일 때 1000거리 이상이면 가림
+	float Dist = FVector::Dist(this->GetActorLocation(), LocalChar->GetActorLocation());
+	if (Dist > 1000.f)
+	{
+		CraftingWidgetComp->SetVisibility(false);
+		return;
+	}
+
+	// 3. 거리 1000 안쪽이면 시야(장애물) 라인트레이스 확인 (월드 스태틱만 감지)
+	TArray<FHitResult> HitResults;
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(this);
+	QueryParams.AddIgnoredActor(LocalChar);
+
+	FCollisionObjectQueryParams ObjectParams;
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
+
+	// 중간에 겹치는 투명 볼륨(PCGVolume 등)을 통과하기 위해 MultiTrace 사용
+	bool bHit = GetWorld()->LineTraceMultiByObjectType(
+		HitResults,
+		LocalChar->GetActorLocation(),
+		this->GetActorLocation(),
+		ObjectParams,
+		QueryParams
+	);
+
+	bool bBlockedByWall = false;
+
+	if (bHit)
+	{
+		for (const FHitResult& Hit : HitResults)
+		{
+			AActor* HitActor = Hit.GetActor();
+			
+			// 충돌한 액터가 '볼륨(Volume)' 클래스 계열이면 무시하고 통과시킴
+			if (HitActor && !HitActor->IsA<AVolume>())
+			{
+				bBlockedByWall = true;
+				
+				// 디버깅용 로그: 진짜 벽을 가린 녀석 출력
+				FString HitName = HitActor->GetName();
+				FString CompName = Hit.GetComponent() ? Hit.GetComponent()->GetName() : TEXT("UnknownComp");
+				UE_LOG(LogTemp, Warning, TEXT("[Crafting UI Visibility] Blocked by Actor: %s / Component: %s"), *HitName, *CompName);
+				
+				break; // 하나라도 진짜 벽에 막혔으면 더 검사할 필요 없음
+			}
+		}
+	}
+
+	if (bBlockedByWall)
+	{
+		// 중간에 진짜 장애물(벽 등)이 있으면 가림
+		CraftingWidgetComp->SetVisibility(false);
+	}
+	else
+	{
+		// 안 가려져 있으면 보임
+		CraftingWidgetComp->SetVisibility(true);
+	}
 }
